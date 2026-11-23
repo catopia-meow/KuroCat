@@ -12,19 +12,35 @@
 enum class CatHitZone {
     None,
     Head,
-    Body
+    Body, LeftEar, RightEar, Belly
 };
 
 class CatRenderer {
 public:
     static constexpr float RadToDeg = 57.2957795f;
 
-    static CatHitZone hitTest(Pt p, const CatPhysics& physics) {
+    static CatHitZone hitTest(Pt p, const CatPhysics& physics, CatCoatTheme coat) {
         float cx = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
         float breath = std::sin(physics.time * 2.1f) * 1.6f;
         Pt headCenter = { cx + physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f,
                           126.0f + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f };
 
+        if (coat == CatCoatTheme::OrcaCat) {
+            float dx = p.x - headCenter.x, dy = p.y - headCenter.y;
+            float tilt = physics.headTilt.value;
+            float x = dx * std::cos(tilt) + dy * std::sin(tilt);
+            float y = dy * std::cos(tilt) - dx * std::sin(tilt);
+            if (y < 0 && y > -64 && std::abs(x) < 68 &&
+                (x*x/(43*43) + y*y/(30*30) > 1.0f)) {
+                bool left = x < 0;
+                Gdiplus::GraphicsPath path;
+                buildEar(path, left, physics, coat);
+                if (path.IsVisible(x,y)) return left ? CatHitZone::LeftEar : CatHitZone::RightEar;
+            }
+            float bx = (p.x - cx) / 26.0f;
+            float by = (p.y - (CatPhysics::SeatAnchor.y - 22.0f)) / 19.0f;
+            if (bx*bx + by*by <= 1.0f) return CatHitZone::Belly;
+        }
         float hdx = (p.x - headCenter.x) / 48.0f;
         float hdy = (p.y - headCenter.y) / 42.0f;
         if (hdx * hdx + hdy * hdy <= 1.0f) return CatHitZone::Head;
@@ -52,11 +68,12 @@ public:
             126.0f + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f
         };
 
-        // 1. Mini White Mouse (facing cat)
-        drawMouse(g, physics, settings.keyboardTheme);
-
-        // 2. Mini 65% Mechanical Keyboard (facing cat) + Backlit Glow
-        drawKeyboard(g, physics, settings.keyboardTheme, settings.eyeTheme, settings.showKeyLegends);
+        if (settings.tabletMode) {
+            drawTablet(g, physics);
+        } else {
+            drawMouse(g, physics, settings.keyboardTheme);
+            drawKeyboard(g, physics, settings.keyboardTheme, settings.eyeTheme, settings.showKeyLegends);
+        }
 
         // 3. Tail
         drawTail(g, seatX, seatY, physics, settings.coatTheme);
@@ -76,7 +93,8 @@ public:
         drawHeadFeatures(g, headCenter, physics, settings.eyeTheme, settings.coatTheme);
 
         // 8. Front Paws (Idle Sitting & Dynamic Reaching)
-        drawFrontPaws(g, seatX, seatY, breath, physics, settings.coatTheme);
+        if (settings.tabletMode) drawStylus(g, physics);
+        drawFrontPaws(g, seatX, seatY, breath, physics, settings.coatTheme, settings.tabletMode);
 
         // 9. Floating Keycap Badges (keyboard + mouse clicks)
         if (!physics.floatingKeycaps.empty()) {
@@ -456,20 +474,23 @@ private:
         g.TranslateTransform(center.x, center.y);
         g.RotateTransform(physics.headTilt.value * RadToDeg);
 
-        float yawRad = physics.headYaw.value * 0.50f;
-        float pitchRad = physics.headPitch.value * 0.36f;
-        float fold = physics.earFold.value;
-        float twitch = physics.earTwitch.value * 0.045f;
-
-        drawEar3D(g, true, yawRad, pitchRad, fold, twitch, coat);
-        drawEar3D(g, false, yawRad, pitchRad, fold, -twitch, coat);
+        SolidBrush brush(earTailColor(coat));
+        for (bool left : {true, false}) {
+            GraphicsPath ear;
+            buildEar(ear, left, physics, coat);
+            g.FillPath(&brush, &ear);
+        }
         g.Restore(st);
     }
 
-    static void drawEar3D(Gdiplus::Graphics& g, bool isLeft, float yawRad, float pitchRad, float fold, float twitch, CatCoatTheme coat) {
-        using namespace Gdiplus;
+    static void buildEar(Gdiplus::GraphicsPath& ear, bool isLeft,
+                         const CatPhysics& physics, CatCoatTheme coat) {
         float sign = isLeft ? -1.0f : 1.0f;
-        float foldAngle = sign * (0.06f + fold * 0.34f) + twitch;
+        float yawRad = physics.headYaw.value * 0.50f;
+        float pitchRad = physics.headPitch.value * 0.36f;
+        float angle = coat == CatCoatTheme::OrcaCat ? physics.orcaEarAngle(isLeft)
+                                                    : 0.06f + physics.earFold.value * 0.34f;
+        float foldAngle = sign * (angle - physics.earTwitch.value * 0.045f);
         float tipDx = std::sin(foldAngle) * 32.0f;
         float tipDy = -std::cos(foldAngle) * 32.0f;
 
@@ -480,14 +501,11 @@ private:
         Pt tipL = { tip3D.x - sign * 3.8f, tip3D.y + 2.8f };
         Pt tipR = { tip3D.x + sign * 3.8f, tip3D.y + 3.2f };
 
-        GraphicsPath ear;
         addQuadBezier(ear, innerBase, { (innerBase.x + tipL.x) * 0.5f - sign * 1.5f, (innerBase.y + tipL.y) * 0.5f - 2.0f }, tipL);
         addQuadBezier(ear, tipL, { tip3D.x, tip3D.y - 2.2f }, tipR);
         addQuadBezier(ear, tipR, { (outerBase.x + tipR.x) * 0.5f + sign * 2.5f, (outerBase.y + tipR.y) * 0.5f - 2.0f }, outerBase);
         ear.CloseFigure();
 
-        SolidBrush b(earTailColor(coat));
-        g.FillPath(&b, &ear);
     }
 
     // MARK: - Unified C1-Continuous Cat Silhouette (+ Siamese 2.5D Face Mask)
@@ -816,9 +834,61 @@ private:
 
     // MARK: - Front Paws
 
-    static void drawFrontPaws(Gdiplus::Graphics& g, float seatX, float seatY, float breath, const CatPhysics& physics, CatCoatTheme coat) {
+    static void drawTablet(Gdiplus::Graphics& g, const CatPhysics& physics) {
+        using namespace Gdiplus;
+        auto panel = [&](float x, float y, float w, float h, float r, Color color) {
+            GraphicsPath shape;
+            addRoundedRect(shape,x,y,w,h,r);
+            SolidBrush brush(color);
+            g.FillPath(&brush,&shape);
+        };
+        constexpr float top = CatPhysics::tabletTop, height = CatPhysics::tabletHeight;
+        constexpr float depth = CatPhysics::tabletDepth, left = CatPhysics::keypadLeft;
+        constexpr float half = CatPhysics::keyHalf;
+        panel(118,top+depth,207,height,8,rgb(0x28333D));
+        panel(118,top,207,height,8,rgb(0x505F6A));
+        panel(129,235,187,55,4,rgb(0x27353B));
+        panel(131,237,183,51,3,rgb(0xE5E9DE));
+        panel(121,239,5,2,1,physics.penDown ? rgb(0x91E6C5) : rgb(0x99ABA9));
+
+        panel(left,top+depth,height,height,6,rgb(0x28333D));
+        panel(left,top,height,height,6,rgb(0x505F6A));
+        double now = nowSeconds();
+        for (int i = 0; i < CatPhysics::tabletKeyCount; ++i) {
+            const auto& cap = physics.tabletKeys[i];
+            Pt pt = CatPhysics::tabletKeyCenter(i);
+            bool lit = cap.held || now - cap.pressedAt < 0.48;
+            float y = pt.y + (cap.held ? 1.6f : 0.f);
+            panel(pt.x-half,pt.y-half+1.5f,2*half,2*half,2.5f,rgb(0x34414A));
+            panel(pt.x-half,y-half,2*half,2*half,2.5f,lit ? rgb(0x91E6C5) : rgb(0xDFE5DC));
+        }
+        Pen ink(rgb(0x355A5F),1.35f);
+        ink.SetStartCap(LineCapRound);
+        ink.SetEndCap(LineCapRound);
+        SolidBrush dot(rgb(0x355A5F));
+        Pt previous{};
+        for (const auto& sample : physics.ink) {
+            Pt pt = sample.pos;
+            if (sample.startsStroke) g.FillEllipse(&dot,pt.x-0.7f,pt.y-0.7f,1.4f,1.4f);
+            else g.DrawLine(&ink,previous.x,previous.y,pt.x,pt.y);
+            previous=pt;
+        }
+    }
+
+    static void drawStylus(Gdiplus::Graphics& g, const CatPhysics& physics) {
+        using namespace Gdiplus;
+        Pt t=physics.tabletTip;
+        if (!physics.penDown) t.y -= 4.f;
+        Pen barrel(rgb(0x59657A),4.5f), nib(rgb(0x2C3844),1.7f), band(rgb(0x9AD6C5),3.5f);
+        barrel.SetEndCap(LineCapRound);
+        g.DrawLine(&barrel,t.x+2.6f,t.y-5.f,t.x+15.f,t.y-29.f);
+        g.DrawLine(&band,t.x+12.f,t.y-23.f,t.x+13.f,t.y-25.f);
+        g.DrawLine(&nib,t.x,t.y,t.x+2.6f,t.y-5.f);
+    }
+
+    static void drawFrontPaws(Gdiplus::Graphics& g, float seatX, float seatY, float breath, const CatPhysics& physics, CatCoatTheme coat, bool tabletMode) {
         Pt lPos = physics.leftPaw.point();
-        Pt rPos = physics.rightPaw.point();
+        Pt rPos = tabletMode ? physics.penGrip() : physics.rightPaw.point();
 
         float lDist = std::hypot(lPos.x - CatPhysics::LeftPawRest.x, lPos.y - CatPhysics::LeftPawRest.y);
         float rDist = std::hypot(rPos.x - CatPhysics::RightPawRest.x, rPos.y - CatPhysics::RightPawRest.y);
@@ -839,7 +909,7 @@ private:
             drawLimb(g, leftShoulder, mid, lPos, 19.0f, 13.5f, Limb::LeftForeleg, 0.78f, coat);
         }
 
-        if (rDist < 6.0f && !physics.rightPawTyping) {
+        if (!tabletMode && rDist < 6.0f && !physics.rightPawTyping) {
             drawIdleFrontLeg(g, { seatX + 18.0f, seatY - 30.0f }, { seatX + 16.0f, seatY + 12.0f }, false, coat);
         } else {
             Pt mid = { (rightShoulder.x + rPos.x) * 0.5f + 4.0f, (rightShoulder.y + rPos.y) * 0.5f - 6.0f };

@@ -108,7 +108,14 @@ public:
             const RAWKEYBOARD& kb = raw->data.keyboard;
             // Ignore synthetic overrun / pause prefix
             if (kb.MakeCode == 0 && kb.VKey == 0xFF) return;
-            PhysicalKey key = mapRawInputKey(kb.MakeCode, kb.Flags, kb.VKey);
+            USHORT scan = kb.MakeCode;
+            USHORT flags = kb.Flags;
+            if (!scan && kb.VKey != 0 && kb.VKey != 0xff) {
+                UINT mapped = MapVirtualKeyW(kb.VKey, MAPVK_VK_TO_VSC_EX);
+                scan = LOBYTE(mapped);
+                if (HIBYTE(mapped) == 0xe0) flags |= RI_KEY_E0;
+            }
+            PhysicalKey key = mapRawInputKey(scan, flags, kb.VKey);
             if (key == PhysicalKey::None) return;
 
             bool isBreak = (kb.Flags & RI_KEY_BREAK) != 0;

@@ -8,7 +8,9 @@
 
 这个分支为 Windows 版加入了黑白燕尾服配色的「虎鲸猫」皮肤。首次运行默认显示虎鲸猫。右键小猫，打开「猫咪皮肤」，即可在虎鲸猫和原版皮肤之间切换。
 
-[下载虎鲸猫桌宠（Windows x64）](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-1/KuroCat-OrcaCat-Windows-x64.exe)
+在 Blender、Krita 或 Photoshop 等受支持的绘画软件中，虎鲸猫会拿起画笔，切到文字输入框时会换回键鼠。右键小猫可以固定桌面模式或清空画板。
+
+[下载 Windows x64 程序](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-2/KuroCat-OrcaCat-Aligned-x64.exe) · [下载完整 ZIP（含源码）](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-2/KuroCat-OrcaCat-Aligned-Windows-x64.zip)
 
 ![虎鲸猫待机和操作键鼠时的效果](assets/preview_orca_cat.png)
 

@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <cmath>
 #include <vector>
+#include <deque>
 #include <unordered_map>
 #include <random>
 #include <algorithm>
@@ -33,6 +34,8 @@ enum class EyeColorTheme : int {
 };
 
 struct CatSettings {
+    bool tabletMode = true;
+    bool autoDeskMode = true;
     bool showKeyBadges = true;
     bool showMouseBadges = true;
     bool showKeyLegends = true;
@@ -56,6 +59,8 @@ struct CatSettings {
             if (RegQueryValueExW(hKey, name, nullptr, nullptr, (LPBYTE)&val, &sz) == ERROR_SUCCESS) return val;
             return defVal;
         };
+        autoDeskMode = readDword(L"AutoDeskMode", 1) != 0;
+        tabletMode = readDword(L"TabletMode", 1) != 0;
         showKeyBadges    = readDword(L"ShowKeyBadges", 1) != 0;
         showMouseBadges  = readDword(L"ShowMouseBadges", 1) != 0;
         showKeyLegends   = readDword(L"ShowKeyLegends", 1) != 0;
@@ -82,6 +87,8 @@ struct CatSettings {
         auto writeDword = [&](const wchar_t* name, DWORD val) {
             RegSetValueExW(hKey, name, 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
         };
+        writeDword(L"AutoDeskMode", autoDeskMode);
+        if (!autoDeskMode) writeDword(L"TabletMode", tabletMode);
         writeDword(L"ShowKeyBadges", showKeyBadges ? 1 : 0);
         writeDword(L"ShowMouseBadges", showMouseBadges ? 1 : 0);
         writeDword(L"ShowKeyLegends", showKeyLegends ? 1 : 0);
@@ -205,8 +212,86 @@ public:
     bool isHappyClosedEyes() const { return petHeadIntensity > 0.45f; }
     bool isBlissfulSquint() const { return petBodyIntensity > 0.35f && !isHappyClosedEyes(); }
 
+    // Track the virtual desktop, including monitors with negative origins.
+    struct InkPoint { Pt pos; bool startsStroke; };
+    std::deque<InkPoint> ink;
+    Pt tabletTip{183.0f, 263.0f};
+    bool penDown = false;
+    static constexpr float padLeft = 134, padRight = 311, padTop = 240, padBottom = 285;
+
+    void sampleTablet(POINT cursor, bool down) {
+        int width = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1);
+        int height = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN) - 1);
+        float u = std::clamp(float(cursor.x - GetSystemMetrics(SM_XVIRTUALSCREEN)) / width, 0.f, 1.f);
+        float v = std::clamp(float(cursor.y - GetSystemMetrics(SM_YVIRTUALSCREEN)) / height, 0.f, 1.f);
+        tabletTip = {padLeft + u*(padRight-padLeft), padTop + v*(padBottom-padTop)};
+        if (down || penDown) {
+            bool start = !penDown || ink.empty();
+            if (start || std::hypot(ink.back().pos.x-tabletTip.x, ink.back().pos.y-tabletTip.y) > 0.18f) {
+                ink.push_back({tabletTip, start});
+                if (ink.size() > 2048) { ink.pop_front(); ink.front().startsStroke = true; }
+            }
+        }
+        penDown = down;
+    }
+
+    Pt penGrip() const { return {tabletTip.x + 6, tabletTip.y - (penDown ? 11.f : 15.f)}; }
+
+    // Nine display keys fit beside the tablet. Reuse released slots for other shortcuts.
+    struct TabletKey {
+        PhysicalKey key;
+        double pressedAt = -10.0;
+        bool held = false;
+    };
+    static constexpr int tabletKeyCount = 9;
+    TabletKey tabletKeys[tabletKeyCount] = {{PhysicalKey::LeftControl}, {PhysicalKey::LeftShift},
+        {PhysicalKey::LeftOption}, {PhysicalKey::Z}, {PhysicalKey::B}, {PhysicalKey::Space},
+        {PhysicalKey::X}, {PhysicalKey::C}, {PhysicalKey::V}};
+    int latestTabletKey = -1;
+
+    static constexpr float tabletTop = 230.f, tabletHeight = 62.f, tabletDepth = 4.f;
+    static constexpr float keypadLeft = 45.f, keyPitch = 18.f, keyHalf = 7.75f;
+    static Pt tabletKeyCenter(int slot) {
+        return {keypadLeft + tabletHeight * 0.5f + keyPitch * (slot % 3 - 1),
+                tabletTop + tabletHeight * 0.5f + keyPitch * (slot / 3 - 1)};
+    }
+
+    static int tabletKeyAt(Pt point) {
+        for (int i = 0; i < tabletKeyCount; ++i) {
+            Pt center = tabletKeyCenter(i);
+            if (std::abs(point.x-center.x) <= keyHalf && std::abs(point.y-center.y) <= keyHalf)
+                return i;
+        }
+        return -1;
+    }
+
+    void pressTabletKey(PhysicalKey key, double now) {
+        int choice = -1;
+        for (int i = 0; i < tabletKeyCount; ++i) {
+            if (tabletKeys[i].key == key) { choice = i; break; }
+            if (!tabletKeys[i].held && (choice < 0 || tabletKeys[i].pressedAt < tabletKeys[choice].pressedAt))
+                choice = i;
+        }
+        if (choice < 0) {
+            choice = 0;
+            for (int i = 1; i < tabletKeyCount; ++i)
+                if (tabletKeys[i].pressedAt < tabletKeys[choice].pressedAt) choice = i;
+        }
+        tabletKeys[choice] = {key, now, true};
+        latestTabletKey = choice;
+    }
+
     void triggerKeyDown(PhysicalKey key, const CatSettings& settings) {
         double now = nowSeconds();
+        if (settings.tabletMode) {
+            pressTabletKey(key, now);
+            leftPaw.y.velocity -= 85.f;
+            earTwitch.velocity -= 1.5f;
+            sleepiness = 0.f;
+            if (settings.showKeyBadges)
+                spawnFloatingKeycap(keyBadgeLabel(key), tabletKeyCenter(latestTabletKey), now);
+            return;
+        }
         PhysicalKey vk = visualKeyOf(key);
         keyGlow[vk] = 1.0f;
 
@@ -237,6 +322,11 @@ public:
 
     void triggerMouseClick(int button, bool isDown, const CatSettings& settings) {
         sleepiness = 0.0f;
+        if (settings.tabletMode) {
+            POINT cursor;
+            if (button == 0 && GetCursorPos(&cursor)) sampleTablet(cursor, isDown);
+            return;
+        }
         if (isDown) {
             double now = nowSeconds();
             if (button == 0) {
@@ -257,6 +347,29 @@ public:
             if (button == 0) mousePressLeft.target = 0.0f;
             else mousePressRight.target = 0.0f;
         }
+    }
+
+    void touchOrca(bool belly, bool left) {
+        lastPetTime_ = nowSeconds();
+        sleepiness = 0.0f;
+        if (belly) {
+            airplaneUntil_ = time + 0.65f;
+            annoyedUntil_ = time + 2.4f;
+            petHeadIntensity = petBodyIntensity = 0.0f;
+            return;
+        }
+        if (time - lastEarTouch_ < 0.24f) return;
+        earFlick_[left ? 0 : 1].velocity += 12.0f;
+        if (time - lastEarTouch_ < 1.1f && time - lastShake_ > 0.8f) {
+            lastShake_ = time;
+            annoyedUntil_ = time + 1.6f;
+        }
+        lastEarTouch_ = time;
+    }
+
+    float orcaEarAngle(bool left) const {
+        int side = left ? 0 : 1;
+        return orcaAngle_[side].value + earFlick_[side].value;
     }
 
     void registerPetStroke(Pt canvasPoint, float delta, bool isHead, const CatSettings& settings) {
@@ -433,6 +546,26 @@ public:
             hindFootActive.target = 0.0f;
         }
 
+        if (settings.tabletMode) {
+            sampleTablet(engine.lastCursorPos, engine.leftMouseDown);
+            for (auto& cap : tabletKeys) cap.held = activeKeys.count(cap.key) != 0;
+            int target = latestTabletKey;
+            if (target >= 0 && !tabletKeys[target].held && now - tabletKeys[target].pressedAt > 0.32) {
+                target = -1;
+                for (int i = 0; i < tabletKeyCount; ++i)
+                    if (tabletKeys[i].held && (target < 0 || tabletKeys[i].pressedAt > tabletKeys[target].pressedAt))
+                        target = i;
+            }
+            Pt rest = {keypadLeft + tabletHeight - 5.f, tabletTop - 2.f};
+            Pt aim = target < 0 ? rest : tabletKeyCenter(target);
+            // Land on the upper rim so the paw doesn't cover the active label.
+            if (target >= 0) aim.y -= keyHalf;
+            leftPaw.setTarget(aim);
+            rightPaw.setTarget(penGrip());
+            leftPawOnMouse = rightPawTyping = false;
+            leftPawTyping = target >= 0;
+            hindFootActive.target = 0;
+        }
         leftPaw.step(dt, 360.0f, 24.0f);
         rightPaw.step(dt, 360.0f, 24.0f);
         hindFoot.step(dt, 320.0f, 22.0f);
@@ -462,6 +595,21 @@ public:
         bodyTilt.step(dt, 140.0f, 18.0f);
         bodySquash.step(dt, 280.0f, 18.0f);
         headOffsetY.step(dt, 180.0f, 19.0f);
+        if (settings.coatTheme == CatCoatTheme::OrcaCat) {
+            float joy = std::max(petHeadIntensity, petBodyIntensity);
+            for (int i = 0; i < 2; ++i) {
+                float phase = time * 2.1f + i * 0.28f;
+                float angle = 0.22f + 0.07f * std::sin(phase)
+                            + bodyTilt.value * (i ? 1.0f : -1.0f);
+                angle += joy * (-0.30f + 0.18f * std::sin(time * 7.0f + i));
+                angle += sleepiness * (0.59f + 0.11f * std::sin(time * 1.3f + i));
+                if (time < annoyedUntil_) angle = 0.83f + 0.13f * std::sin(time * 6.0f + i * 2.0f);
+                if (time < airplaneUntil_) angle = 1.54f;
+                orcaAngle_[i].target = angle;
+                orcaAngle_[i].step(dt, 190.0f, 19.0f);
+                earFlick_[i].step(dt, 420.0f, 9.0f);
+            }
+        }
         earFold.step(dt, 120.0f, 16.0f);
         earTwitch.step(dt, 320.0f, 16.0f);
 
@@ -506,6 +654,10 @@ public:
 
         if (now - lastPetTime_ > 0.28) {
             headTilt.target = bodyTilt.target * 0.45f + headYaw.value * (0.11f + hunt * 0.05f) - headYaw.value * headPitch.value * 0.04f;
+        }
+        float shakeAge = time - lastShake_;
+        if (settings.coatTheme == CatCoatTheme::OrcaCat && shakeAge < 0.5f) {
+            headTilt.velocity += dt * 115.0f * std::cos(shakeAge * 30.0f) * (1.0f - shakeAge * 2.0f);
         }
         headTilt.step(dt, 130.0f, 16.0f);
 
@@ -578,6 +730,10 @@ public:
     }
 
 private:
+    Spring1D orcaAngle_[2]{Spring1D(0.22f), Spring1D(0.22f)};
+    Spring1D earFlick_[2];
+    float airplaneUntil_ = -1.0f, annoyedUntil_ = -1.0f;
+    float lastEarTouch_ = -10.0f, lastShake_ = -10.0f;
     float nextBlinkTime_ = 3.2f;
     float blinkProgress_ = 0.0f;
     bool isBlinking_ = false;

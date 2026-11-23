@@ -8,7 +8,9 @@
 
 This fork adds Orca Cat (虎鲸猫), a black-and-white tuxedo cat, to the Windows app. A fresh installation starts with Orca Cat. Right-click the cat and open the skin menu to switch between Orca Cat and the original skins.
 
-[Download Orca Cat for Windows x64](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-1/KuroCat-OrcaCat-Windows-x64.exe)
+In supported art apps such as Blender, Krita, and Photoshop, Orca Cat picks up a stylus and switches back to the keyboard and mouse when a text field has focus. Right-click the cat to select a desk mode manually or clear the drawing tablet.
+
+[Download the Windows x64 app](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-2/KuroCat-OrcaCat-Aligned-x64.exe) · [Download the ZIP with source](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-2/KuroCat-OrcaCat-Aligned-Windows-x64.zip)
 
 ![Orca Cat sitting and using the mouse and keyboard](assets/preview_orca_cat.png)
 

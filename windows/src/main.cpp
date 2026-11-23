@@ -17,6 +17,7 @@
 #include "InputEngine.hpp"
 #include "CatPhysics.hpp"
 #include "CatRenderer.hpp"
+#include "DeskMode.hpp"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -79,6 +80,7 @@ enum MenuCmd : UINT {
     CMD_OPEN_UPDATE,
     CMD_RELAUNCH_ADMIN,
     CMD_TOGGLE_RUN_AS_ADMIN,
+    CMD_AUTO_DESK, CMD_TABLET_MODE, CMD_CLEAR_TABLET,
     CMD_QUIT
 };
 
@@ -89,6 +91,7 @@ struct AppState {
     NOTIFYICONDATAW nid = {};
 
     CatSettings settings;
+    std::shared_ptr<desk::Monitor> deskMonitor;
     InputEngine input;
     CatPhysics physics;
 
@@ -818,6 +821,15 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::OrcaCat ? MF_CHECKED : 0), CMD_COAT_ORCA_CAT, L"虎鲸猫");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)coatMenu, L"\u732B\u54AA\u76AE\u80A4");
 
+    AppendMenuW(menu, MF_STRING | (app.settings.autoDeskMode ? MF_CHECKED : 0),
+                CMD_AUTO_DESK, L"自动识别绘画窗口和文字输入");
+    AppendMenuW(menu, MF_STRING | (app.settings.tabletMode ? MF_CHECKED : 0),
+                CMD_TABLET_MODE, app.settings.autoDeskMode
+                    ? (app.settings.tabletMode ? L"当前：手绘板（点击固定为键鼠）" : L"当前：键鼠（点击固定为手绘板）")
+                    : L"手绘板模式");
+    if (app.settings.tabletMode)
+        AppendMenuW(menu, MF_STRING, CMD_CLEAR_TABLET, L"清空画板");
+
     // Keyboard Theme submenu
     HMENU kbMenu = CreatePopupMenu();
     AppendMenuW(kbMenu, MF_STRING | (app.settings.keyboardTheme == KeyboardTheme::ClassicMilk ? MF_CHECKED : 0), CMD_KB_MILK, L"\u7ECF\u5178\u5976\u767D\u6696\u9EC4 (\u539F\u7248)");
@@ -894,6 +906,23 @@ void showContextMenu(AppState& app, POINT screenPt) {
         case CMD_TOGGLE_MOUSE_BADGES:
             app.settings.showMouseBadges = !app.settings.showMouseBadges;
             app.settings.saveToRegistry();
+            break;
+        case CMD_AUTO_DESK:
+            app.settings.autoDeskMode = !app.settings.autoDeskMode;
+            app.deskMonitor->result = -1;
+            app.deskMonitor->enabled = app.settings.autoDeskMode;
+            app.settings.saveToRegistry();
+            break;
+        case CMD_TABLET_MODE:
+            app.settings.autoDeskMode = false;
+            app.deskMonitor->enabled = false;
+            app.settings.tabletMode = !app.settings.tabletMode;
+            app.physics.penDown = false;
+            app.settings.saveToRegistry();
+            break;
+        case CMD_CLEAR_TABLET:
+            app.physics.ink.clear();
+            app.physics.penDown = false;
             break;
         case CMD_TOGGLE_KEY_LEGENDS:
             app.settings.showKeyLegends = !app.settings.showKeyLegends;
@@ -1021,6 +1050,13 @@ void tickAndRender(AppState& app) {
     int w = std::max(1, (int)(wr.right - wr.left));
     int h = std::max(1, (int)(wr.bottom - wr.top));
 
+    int detected = app.deskMonitor->result.load();
+    if (app.settings.autoDeskMode && detected >= 0 && app.settings.tabletMode != (detected == 1)) {
+        app.settings.tabletMode = detected == 1;
+        app.physics.penDown = false;
+        app.physics.latestTabletKey = -1;
+        app.physics.floatingKeycaps.clear();
+    }
     app.physics.step(dt, wr, app.input, app.settings);
     if (!physicsLooksSane(app.physics)) {
         // A single non-finite value would otherwise make every later frame draw nothing (the cat
@@ -1039,13 +1075,17 @@ void tickAndRender(AppState& app) {
                 (float)(cur.x - wr.left) / (float)w * CatPhysics::CanvasWidth,
                 (float)(cur.y - wr.top)  / (float)h * CatPhysics::CanvasHeight
             };
-            CatHitZone zone = CatRenderer::hitTest(cp, app.physics);
-            if (zone == CatHitZone::Head || zone == CatHitZone::Body) {
-                if (app.hasLastHover) {
-                    float d = std::hypot(cp.x - app.lastHoverCanvas.x, cp.y - app.lastHoverCanvas.y);
-                    if (d > 1.2f && d < 80.0f) {
+            CatHitZone zone = CatRenderer::hitTest(cp, app.physics, app.settings.coatTheme);
+            if (app.settings.tabletMode && cp.y >= 230.f && cp.y <= 296.f && cp.x >= CatPhysics::keypadLeft && cp.x <= 325.f)
+                zone = CatHitZone::None; // Let the underlying drawing app receive pen strokes.
+            if (zone != CatHitZone::None) {
+                float d = app.hasLastHover ? std::hypot(cp.x - app.lastHoverCanvas.x, cp.y - app.lastHoverCanvas.y) : 0.0f;
+                bool stroke = d > 1.2f && d < 80.0f;
+                if (app.settings.petInteraction && (!app.hasLastHover || stroke)) {
+                    if (zone == CatHitZone::LeftEar || zone == CatHitZone::RightEar || zone == CatHitZone::Belly)
+                        app.physics.touchOrca(zone == CatHitZone::Belly, zone == CatHitZone::LeftEar);
+                    else if (stroke)
                         app.physics.registerPetStroke(cp, d, zone == CatHitZone::Head, app.settings);
-                    }
                 }
                 app.lastHoverCanvas = cp;
                 app.hasLastHover = true;
@@ -1054,7 +1094,8 @@ void tickAndRender(AppState& app) {
             }
             // Holding Alt temporarily unlocks click-through so user can ALWAYS right-click or drag the cat!
             bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-            bool clickThrough = (app.settings.fullClickThrough && !altHeld) || (zone == CatHitZone::None);
+            bool overKey = app.settings.tabletMode && CatPhysics::tabletKeyAt(cp) >= 0;
+            bool clickThrough = (app.settings.fullClickThrough && !altHeld) || (zone == CatHitZone::None && !overKey);
             setClickThrough(app.hwnd, clickThrough);
         } else {
             app.hasLastHover = false;
@@ -1107,7 +1148,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_INPUT:
             if (app) app->input.handleRawInput(lParam);
-            return 0;
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
 
         case WM_TIMER:
             if (wParam == TIMER_RENDER && app) renderIfDue(*app);
@@ -1161,6 +1202,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_LBUTTONDOWN: {
             bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
             if (app && (!app->settings.fullClickThrough || altHeld)) {
+                if (app->settings.tabletMode && !altHeld) {
+                    RECT bounds{};
+                    GetClientRect(hwnd, &bounds);
+                    Pt point{short(LOWORD(lParam)) * CatPhysics::CanvasWidth / std::max(1L, bounds.right),
+                             short(HIWORD(lParam)) * CatPhysics::CanvasHeight / std::max(1L, bounds.bottom)};
+                    int slot = CatPhysics::tabletKeyAt(point);
+                    if (slot >= 0) {
+                        app->physics.triggerKeyDown(app->physics.tabletKeys[slot].key, app->settings);
+                        return 0;
+                    }
+                }
                 app->isDragging = true;
                 GetCursorPos(&app->dragStartCursor);
                 RECT wr = {};
@@ -1385,7 +1437,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         }
         if (owner) {
             int runningVersion = (int)(INT_PTR)GetPropW(owner, VERSION_PROP);
-            bool replace = forceTakeover || runningVersion < myVersion;
+            bool replace = forceTakeover || runningVersion < myVersion ||
+                           (runningVersion == myVersion && (INT_PTR)GetPropW(owner, L"KuroCatTabletMode") < 5);
             if (!replace || !shutDownRunningInstance(owner, 6000)) {
                 PostMessageW(owner, WM_WAKE_EXISTING, 0, 0);
                 if (hMutex) CloseHandle(hMutex);
@@ -1398,6 +1451,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     AppState app;
     g_app = &app;
     app.settings.loadFromRegistry();
+    app.deskMonitor = desk::start();
+    app.deskMonitor->enabled = app.settings.autoDeskMode;
     app.isElevated = isCurrentProcessElevated();
 
     // "Always run as administrator": hand over to an elevated copy (one UAC prompt). If the user
@@ -1450,6 +1505,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         nullptr, nullptr, hInst, nullptr
     );
     if (app.menuOwnerHwnd) {
+        SetPropW(app.menuOwnerHwnd, L"KuroCatTabletMode", (HANDLE)5);
         SetPropW(app.menuOwnerHwnd, VERSION_PROP, (HANDLE)(INT_PTR)myVersion);
         // When elevated, UIPI would drop messages from the (non-elevated) taskbar and from a
         // re-launched KuroCat. Explicitly allow the few messages we rely on.
@@ -1536,6 +1592,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         housekeeping(app);
     }
 
+    app.deskMonitor->stop = true;
     g_app = nullptr;
     Gdiplus::GdiplusShutdown(gdipToken);
     if (hMutex) CloseHandle(hMutex);
