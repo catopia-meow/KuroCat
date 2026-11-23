@@ -4,6 +4,14 @@
   <a href="README.md">简体中文</a> | <b>English</b>
 </p>
 
+## Orca Cat (虎鲸猫) skin for Windows
+
+This fork adds Orca Cat (虎鲸猫), a black-and-white tuxedo cat, to the Windows app. A fresh installation starts with Orca Cat. Right-click the cat and open the skin menu to switch between Orca Cat and the original skins.
+
+[Download Orca Cat for Windows x64](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-1/KuroCat-OrcaCat-Windows-x64.exe)
+
+![Orca Cat sitting and using the mouse and keyboard](assets/preview_orca_cat.png)
+
 <p align="center">
   <img src="assets/demo_typing.gif" width="265" alt="Typing on keyboard"/>
   <img src="assets/demo_hunting.gif" width="265" alt="Hunting boba eyes on fast mouse movement"/>

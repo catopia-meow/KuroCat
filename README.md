@@ -4,6 +4,14 @@
   <b>简体中文</b> | <a href="README.en.md">English</a>
 </p>
 
+## 虎鲸猫皮肤（Windows）
+
+这个分支为 Windows 版加入了黑白燕尾服配色的「虎鲸猫」皮肤。首次运行默认显示虎鲸猫。右键小猫，打开「猫咪皮肤」，即可在虎鲸猫和原版皮肤之间切换。
+
+[下载虎鲸猫桌宠（Windows x64）](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-1/KuroCat-OrcaCat-Windows-x64.exe)
+
+![虎鲸猫待机和操作键鼠时的效果](assets/preview_orca_cat.png)
+
 <p align="center">
   <img src="assets/demo_typing.gif" width="265" alt="敲键盘打字"/>
   <img src="assets/demo_hunting.gif" width="265" alt="快速晃鼠标捕猎大圆眼"/>

@@ -88,6 +88,8 @@ public:
     }
 
 private:
+    enum class Limb { LeftForeleg, RightForeleg, HindLeg };
+
     static Gdiplus::Color catBlack(BYTE a = 255)      { return Gdiplus::Color(a, 22, 22, 24); }
     static Gdiplus::Color contourMint(BYTE a = 194)   { return Gdiplus::Color(a, 209, 235, 227); }
     static Gdiplus::Color whiskerWhite(BYTE a = 174)  { return Gdiplus::Color(a, 224, 230, 235); }
@@ -99,12 +101,19 @@ private:
     static Gdiplus::Color siameseWhisker(BYTE a = 174){ return Gdiplus::Color(a, 92, 69, 56); }
 
     static bool patterned(CatCoatTheme c) { return c == CatCoatTheme::Shorthair || c == CatCoatTheme::OrangeWhite; }
+    static bool hasWhiteSocks(CatCoatTheme c) { return c == CatCoatTheme::OrcaCat || patterned(c); }
     static Gdiplus::Color rgb(unsigned int hex, BYTE a = 255) { return Gdiplus::Color(a, (hex >> 16) & 255, (hex >> 8) & 255, hex & 255); }
     static Gdiplus::Color bodyColor(CatCoatTheme c) { return c == CatCoatTheme::Shorthair ? rgb(0xC2C5C1) : (c == CatCoatTheme::OrangeWhite ? rgb(0xF2EEE4) : catBlack()); }
     static Gdiplus::Color limbColor(CatCoatTheme c) { return c == CatCoatTheme::OrangeWhite ? rgb(0xD8AA73) : bodyColor(c); }
-    static Gdiplus::Color pawColor(CatCoatTheme c) { return patterned(c) ? rgb(0xF2EEE4) : (c == CatCoatTheme::Siamese ? siamesePoint() : catBlack()); }
+    static Gdiplus::Color pawColor(CatCoatTheme c) {
+        if (c == CatCoatTheme::OrcaCat) return rgb(0xF3F2EE);
+        return patterned(c) ? rgb(0xF2EEE4) : (c == CatCoatTheme::Siamese ? siamesePoint() : catBlack());
+    }
     static Gdiplus::Color earTailColor(CatCoatTheme c) { return c == CatCoatTheme::Siamese ? siamesePoint() : limbColor(c); }
-    static Gdiplus::Color creaseColor(CatCoatTheme c, BYTE a = 255) { return patterned(c) ? rgb(0x8B8171, (BYTE)(a*0.60f)) : contourMint(a); }
+    static Gdiplus::Color creaseColor(CatCoatTheme c, BYTE a = 255) {
+        if (c == CatCoatTheme::OrcaCat) return rgb(0xA5A4AA, (BYTE)(a*0.72f));
+        return patterned(c) ? rgb(0x8B8171, (BYTE)(a*0.60f)) : contourMint(a);
+    }
     static Gdiplus::PointF coatMarkPoint(CoatPoint p, bool headSurface, bool skull, CatCoatTheme coat, float seatX, float seatY, Pt head, const CatPhysics& physics) {
         if (headSurface) {
             float depth=coat==CatCoatTheme::OrangeWhite ? 29.6f*std::sqrt(std::max(0.0f,1-p.x*p.x/(46*46)-p.y*p.y/(40*40))) : 27.5f;
@@ -532,6 +541,28 @@ private:
             if (patterned(coat)) {
                 GraphicsState cs = g.Save(); g.SetClip(&path, CombineModeIntersect);
                 drawCoatMarks(g, seatX, seatY, headCenter, physics, coat); g.Restore(cs);
+            } else if (coat == CatCoatTheme::OrcaCat) {
+                // Anchor the top of the bib to the moving chin and the taper to the breast.
+                auto chin = [&](float x, float y) {
+                    Pt p = projectHead3D(x, y, 22.0f, yaw * 0.50f, pitch * 0.36f);
+                    return H(p.x, p.y);
+                };
+                GraphicsPath bib;
+                bib.AddBezier(chin(-27, 24), chin(-24, 17), chin(-16, 17), chin(0, 17));
+                bib.AddBezier(chin(0, 17), chin(16, 17), chin(24, 17), chin(27, 24));
+                bib.AddBezier(chin(27, 24), chin(31, 30), B(30, -47), B(22, -32));
+                bib.AddBezier(B(22, -32), B(18, -24), B(10, -19), B(5, -15));
+                bib.AddLine(B(5, -15), B(5, -19));
+                bib.AddBezier(B(5, -19), B(2, -14), B(0, -12), B(-2, -10));
+                bib.AddLine(B(-2, -10), B(-3, -16));
+                bib.AddBezier(B(-3, -16), B(-17, -23), B(-28, -29), B(-29, -52));
+                bib.AddBezier(B(-29, -52), B(-31, -66), chin(-31, 31), chin(-27, 24));
+                bib.CloseFigure();
+                SolidBrush white(pawColor(coat));
+                GraphicsState clip = g.Save();
+                g.SetClip(&path, CombineModeIntersect);
+                g.FillPath(&white, &bib);
+                g.Restore(clip);
             }
         } else {
             GraphicsState cs = g.Save();
@@ -605,7 +636,7 @@ private:
         Pt hip = { seatX + 26.0f, seatY + 2.0f };
         Pt target = physics.hindFoot.point();
         Pt mid = { (hip.x + target.x) * 0.5f + 10.0f, (hip.y + target.y) * 0.5f - 8.0f };
-        drawLimb(g, hip, mid, target, 15.0f, 12.0f, true, 0.85f * physics.hindFootActive.value, coat);
+        drawLimb(g, hip, mid, target, 15.0f, 12.0f, Limb::HindLeg, 0.85f * physics.hindFootActive.value, coat);
     }
 
     // MARK: - 2.5D Eyes & Whiskers
@@ -619,10 +650,45 @@ private:
         float yawRad = physics.headYaw.value * 0.50f;
         float pitchRad = physics.headPitch.value * 0.36f;
 
+        if (coat == CatCoatTheme::OrcaCat) drawOrcaMuzzle(g, yawRad, pitchRad);
         drawEye3D(g, true, yawRad, pitchRad, physics, eyeTheme, coat);
         drawEye3D(g, false, yawRad, pitchRad, physics, eyeTheme, coat);
         drawWhiskers3D(g, yawRad, pitchRad, physics, coat);
         g.Restore(st);
+    }
+
+    static void drawOrcaMuzzle(Gdiplus::Graphics& g, float yaw, float pitch) {
+        using namespace Gdiplus;
+        auto face = [&](float x, float y, float depth = 31.0f) {
+            Pt p = projectHead3D(x, y, depth, yaw, pitch);
+            return PointF(p.x, p.y);
+        };
+        PointF bridge = face(-1, 12), rightEdge = face(19, 18.5f);
+        PointF rightPad = face(12, 27), lip = face(0.5f, 22);
+        PointF leftPad = face(-10, 26.5f), leftEdge = face(-18.5f, 19);
+        GraphicsPath muzzle;
+        muzzle.AddBezier(bridge, face(2, 12), face(3, 9.2f), face(8, 9.2f));
+        muzzle.AddBezier(face(8, 9.2f), face(14, 9.2f), face(19, 14), rightEdge);
+        muzzle.AddBezier(rightEdge, face(19.5f, 24), face(17, 27), rightPad);
+        muzzle.AddBezier(rightPad, face(7, 27.5f), face(3, 25.5f), lip);
+        muzzle.AddBezier(lip, face(-2.5f, 24.8f), face(-6.5f, 26.5f), leftPad);
+        muzzle.AddBezier(leftPad, face(-15.5f, 27), face(-18.5f, 23.5f), leftEdge);
+        muzzle.AddBezier(leftEdge, face(-18.5f, 13.5f), face(-10, 11), bridge);
+        muzzle.CloseFigure();
+        SolidBrush fur(catBlack());
+        g.FillPath(&fur, &muzzle);
+
+        PointF noseL = face(-3.8f, 13.0f, 34), noseR = face(3.8f, 13.0f, 34);
+        PointF noseTip = face(0, 16.3f, 35);
+        GraphicsPath nose;
+        nose.AddBezier(noseL, face(-3.8f, 11.6f, 34), face(3.8f, 11.6f, 34), noseR);
+        nose.AddBezier(noseR, face(3.8f, 14.2f, 34), face(1.2f, 16.3f, 35), noseTip);
+        nose.AddBezier(noseTip, face(-1.2f, 16.3f, 35), face(-3.8f, 14.2f, 34), noseL);
+        nose.CloseFigure();
+        SolidBrush noseLeather(rgb(0x0D0D0F));
+        g.FillPath(&noseLeather, &nose);
+        Pen groove(rgb(0x101012), 0.7f);
+        g.DrawLine(&groove, noseTip, lip);
     }
 
     static void drawEye3D(Gdiplus::Graphics& g, bool isLeft, float yawRad, float pitchRad, const CatPhysics& physics, EyeColorTheme eyeTheme, CatCoatTheme coat) {
@@ -736,7 +802,9 @@ private:
 
         for (float sign : {-1.0f, 1.0f}) {
             for (int i = 0; i < 3; ++i) {
-                Pt p0 = projectHead3D(sign * 24.0f, rows[i][0], 23.0f, yawRad, pitchRad);
+                Pt p0 = coat == CatCoatTheme::OrcaCat
+                    ? projectHead3D(sign * (18.0f + i), rows[i][0] + 1.0f, 27.0f, yawRad, pitchRad)
+                    : projectHead3D(sign * 24.0f, rows[i][0], 23.0f, yawRad, pitchRad);
                 Pt p2 = projectHead3D(sign * rows[i][1], rows[i][2], 14.0f, yawRad, pitchRad);
                 Pt ctrl = { (p0.x + p2.x) * 0.5f, (p0.y + p2.y) * 0.5f - 0.8f };
                 GraphicsPath wp;
@@ -768,15 +836,38 @@ private:
         } else {
             Pt mid = { (leftShoulder.x + lPos.x) * 0.5f - (physics.leftPawOnMouse ? 8.0f : 4.0f),
                        (leftShoulder.y + lPos.y) * 0.5f - 6.0f };
-            drawLimb(g, leftShoulder, mid, lPos, 19.0f, 13.5f, false, 0.78f, coat);
+            drawLimb(g, leftShoulder, mid, lPos, 19.0f, 13.5f, Limb::LeftForeleg, 0.78f, coat);
         }
 
         if (rDist < 6.0f && !physics.rightPawTyping) {
             drawIdleFrontLeg(g, { seatX + 18.0f, seatY - 30.0f }, { seatX + 16.0f, seatY + 12.0f }, false, coat);
         } else {
             Pt mid = { (rightShoulder.x + rPos.x) * 0.5f + 4.0f, (rightShoulder.y + rPos.y) * 0.5f - 6.0f };
-            drawLimb(g, rightShoulder, mid, rPos, 19.0f, 13.5f, true, 0.78f, coat);
+            drawLimb(g, rightShoulder, mid, rPos, 19.0f, 13.5f, Limb::RightForeleg, 0.78f, coat);
         }
+    }
+
+    static void fillOrcaForeleg(Gdiplus::Graphics& g, const Gdiplus::GraphicsPath& leg, Pt shoulder, Pt paw) {
+        using namespace Gdiplus;
+        float dx = paw.x - shoulder.x, dy = paw.y - shoulder.y;
+        float length = std::max(1.0f, std::hypot(dx, dy));
+        float ux = dx / length, uy = dy / length;
+        // Transparent padding lets the chest show through the rounded shoulder cap.
+        constexpr float pad = 16.0f;
+        float span = length + 2.0f * pad;
+        float fade = std::min(34.0f, 0.52f * length);
+        Color white = pawColor(CatCoatTheme::OrcaCat);
+        Color clear(0, white.GetR(), white.GetG(), white.GetB());
+        Color black = limbColor(CatCoatTheme::OrcaCat);
+        LinearGradientBrush brush(PointF(shoulder.x - ux * pad, shoulder.y - uy * pad),
+                                  PointF(paw.x + ux * pad, paw.y + uy * pad), clear, black);
+        brush.SetWrapMode(WrapModeTileFlipXY);
+        Color colors[] = {clear, clear, white, rgb(0x939297), rgb(0x38373B), black, black};
+        REAL stops[] = {0, (pad - 3.0f) / span, (pad + fade * 0.22f) / span,
+                        (pad + fade * 0.50f) / span, (pad + fade * 0.78f) / span,
+                        (pad + fade) / span, 1};
+        brush.SetInterpolationColors(colors, stops, 7);
+        g.FillPath(&brush, &leg);
     }
 
     static void drawIdleFrontLeg(Gdiplus::Graphics& g, Pt top, Pt bottom, bool isLeft, CatCoatTheme coat) {
@@ -797,7 +888,15 @@ private:
             g.FillPath(&grad, &lp);
         }
 
-        if (patterned(coat)) {
+        if (coat == CatCoatTheme::OrcaCat) {
+            GraphicsPath leg;
+            addRoundedRect(leg, bottom.x - 7.5f, top.y, 15.0f, bottom.y - top.y, 7.5f);
+            fillOrcaForeleg(g, leg, {bottom.x, top.y}, bottom);
+            GraphicsPath toes;
+            addRoundedRect(toes, bottom.x - 7.5f, bottom.y - 9.0f, 15.0f, 14.0f, 5.0f);
+            SolidBrush white(pawColor(coat));
+            g.FillPath(&white, &toes);
+        } else if (patterned(coat)) {
             SolidBrush cuff(pawColor(coat));
             g.FillRectangle(&cuff, bottom.x-7.5f, bottom.y-13.0f, 15.0f, 13.0f);
             g.FillEllipse(&cuff, bottom.x-7.5f, bottom.y-5.0f, 15.0f, 10.0f);
@@ -814,8 +913,9 @@ private:
         g.DrawPath(&p, &p2);
     }
 
-    static void drawLimb(Gdiplus::Graphics& g, Pt start, Pt ctrl, Pt end, float startW, float endW, bool outlineOnLeft, float outlineAlpha, CatCoatTheme coat) {
+    static void drawLimb(Gdiplus::Graphics& g, Pt start, Pt ctrl, Pt end, float startW, float endW, Limb limb, float outlineAlpha, CatCoatTheme coat) {
         using namespace Gdiplus;
+        bool outlineOnLeft = limb != Limb::LeftForeleg;
         constexpr int steps = 14;
         std::vector<PointF> leftEdge, rightEdge;
         leftEdge.reserve(steps + 1);
@@ -855,14 +955,29 @@ private:
                 Color colors[3]={pawColor(coat),limbColor(coat),limbColor(coat)};
                 REAL positions[3]={0,0.30f,1};gradient.SetInterpolationColors(colors,positions,3);
                 g.FillPath(&gradient,&limbPath);
+            } else if (coat == CatCoatTheme::OrcaCat && limb != Limb::HindLeg) {
+                fillOrcaForeleg(g, limbPath, start, end);
             } else g.FillPath(&b, &limbPath);
-            if (!patterned(coat)) g.FillEllipse(&b, pawRect);
+            if (!hasWhiteSocks(coat)) g.FillEllipse(&b, pawRect);
             else {
-                std::vector<PointF> points; int first = (int)(steps*0.72f);
+                std::vector<PointF> points;
+                int first = coat == CatCoatTheme::OrcaCat ? steps - 1 : (int)(steps * 0.72f);
                 for (int i=first; i<=steps; ++i) points.push_back(leftEdge[i]);
                 for (int i=steps; i>=first; --i) points.push_back(rightEdge[i]);
                 SolidBrush cuff(pawColor(coat));
-                g.FillPolygon(&cuff, points.data(), (INT)points.size()); g.FillEllipse(&cuff, pawRect);
+                g.FillPolygon(&cuff, points.data(), (INT)points.size());
+                g.FillEllipse(&cuff, pawRect);
+                if (coat == CatCoatTheme::OrcaCat) {
+                    // Shade the free edge of the white paw, leaving the wrist continuous.
+                    Pt direction = quadTangent(start, ctrl, end, 1.0f);
+                    float angle = std::atan2(direction.y, direction.x) * RadToDeg;
+                    Pen edge(rgb(0x68666E), 1.45f);
+                    edge.SetStartCap(LineCapRound);
+                    edge.SetEndCap(LineCapRound);
+                    RectF rim = pawRect;
+                    rim.Inflate(-0.725f, -0.725f);
+                    g.DrawArc(&edge, rim, angle - 100.0f, 200.0f);
+                }
             }
         } else {
             // Pad gradient endpoints beyond limb geometry + use WrapModeTileFlipXY so GDI+
