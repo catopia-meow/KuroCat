@@ -81,9 +81,7 @@ final class SystemAudio: NSObject, SCStreamOutput, SCStreamDelegate {
                 let live = SCStream(filter: filter, configuration: configuration, delegate: self)
                 try live.addStreamOutput(self, type: .audio, sampleHandlerQueue: self.queue)
                 self.stream = live
-                self.lock.lock()
-                self.activeStream = ObjectIdentifier(live)
-                self.lock.unlock()
+                self.lock.withLock { self.activeStream = ObjectIdentifier(live) }
                 try await live.startCapture()
                 if token != self.generation { try? await live.stopCapture() }
             } catch {
@@ -119,8 +117,8 @@ final class SystemAudio: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .audio, let description = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let format = AVAudioFormat(cmAudioFormatDescription: description) else { return }
+        guard type == .audio, let description = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
+        let format = AVAudioFormat(cmAudioFormatDescription: description)
         let count = CMSampleBufferGetNumSamples(sampleBuffer)
         guard count > 0, let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)) else { return }
         pcm.frameLength = AVAudioFrameCount(count)

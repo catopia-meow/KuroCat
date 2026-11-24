@@ -37,7 +37,13 @@ for coat in CatCoatTheme.allCases {
                     }
                 }
             }
-            if closure == 0 { precondition(new == old,"Open-eye appearance changed") }
+            if closure == 0 {
+                if coat == .orcaCat {
+                    precondition(new != baseline, "Orca Cat iris is invisible")
+                } else {
+                    precondition(new == old, "Open-eye appearance changed")
+                }
+            }
             if closure == 1 { precondition(new == baseline,"Fully closed eye leaves pixels") }
         }
     }
@@ -57,4 +63,4 @@ for coat in CatCoatTheme.allCases {
     }
 }
 precondition(oldFringe > 0,"Fixture did not reproduce original defect")
-print("PASS: both eyes / four skins / all six eye themes; five legacy closure states; open eyes unchanged, covered pixels untouched, fully closed eyes invisible. Original contaminated pixels: \(oldFringe)")
+print("PASS: both eyes, all skins and iris themes; covered pixels untouched and fully closed eyes invisible. Original contaminated pixels: \(oldFringe)")
