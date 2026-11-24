@@ -8,11 +8,15 @@
 
 This fork adds Orca Cat (虎鲸猫), a black-and-white tuxedo cat, to the Windows app. A fresh installation starts with Orca Cat. Right-click the cat and open the skin menu to switch between Orca Cat and the original skins.
 
-In supported art apps such as Blender, Krita, and Photoshop, Orca Cat picks up a stylus and switches back to the keyboard and mouse when a text field has focus. Right-click the cat to select a desk mode manually or clear the drawing tablet.
+Use the icons beneath the pet to give it a treat, put it to sleep, wake it up, switch desk modes, or toggle each kind of input bubble. Hover over an icon to see its name. After hiding the controls, open the cat or tray menu to show them again.
 
-[Download the Windows x64 app](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-2/KuroCat-OrcaCat-Aligned-x64.exe) · [Download the ZIP with source](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-2/KuroCat-OrcaCat-Aligned-Windows-x64.zip)
+Click the headphones icon to give Orca Cat headphones. It closes its eyes and nods along while audio plays on the default Windows output device, and opens its eyes in silence. Click the headphones again or choose another enabled control to stop. Audio is processed locally in real time.
 
-![Orca Cat sitting and using the mouse and keyboard](assets/preview_orca_cat.png)
+In Auto mode, Orca Cat picks up a stylus in supported art apps such as Blender, Krita, and Photoshop. It switches back to the keyboard and mouse when a text field has focus. The updater checks this fork and opens the latest release page when a newer build is available.
+
+[Download the Windows x64 app](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-3/KuroCat-OrcaCat-Windows-x64.exe)
+
+![Orca Cat using the keyboard and listening to audio with icon controls](assets/preview_orca_cat_controls.png)
 
 <p align="center">
   <img src="assets/demo_typing.gif" width="265" alt="Typing on keyboard"/>

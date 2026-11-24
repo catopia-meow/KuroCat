@@ -8,11 +8,15 @@
 
 这个分支为 Windows 版加入了黑白燕尾服配色的「虎鲸猫」皮肤。首次运行默认显示虎鲸猫。右键小猫，打开「猫咪皮肤」，即可在虎鲸猫和原版皮肤之间切换。
 
-在 Blender、Krita 或 Photoshop 等受支持的绘画软件中，虎鲸猫会拿起画笔，切到文字输入框时会换回键鼠。右键小猫可以固定桌面模式或清空画板。
+桌宠下方的图标可以喂零食、让猫睡觉或唤醒猫，也可以切换模式和两类输入气泡。鼠标悬停会显示图标名称。隐藏控件后，右键小猫或托盘头像，选择「显示控件」即可恢复。
 
-[下载 Windows x64 程序](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-2/KuroCat-OrcaCat-Aligned-x64.exe) · [下载完整 ZIP（含源码）](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-2/KuroCat-OrcaCat-Aligned-Windows-x64.zip)
+点击耳机图标后，虎鲸猫会戴上耳机。Windows 默认输出设备有声音时，它会闭眼跟拍，安静时会睁眼。再次点击耳机或选择另一个可用的控件，猫就会摘下耳机。声音只在本机实时分析。
 
-![虎鲸猫待机和操作键鼠时的效果](assets/preview_orca_cat.png)
+在自动模式下，进入 Blender、Krita 或 Photoshop 等受支持的绘画软件时，虎鲸猫会拿起画笔。切到文字输入框时，它会换回键鼠。托盘的「检查更新」查询本 fork，发现新版会打开对应的 GitHub 发布页。
+
+[下载 Windows x64 程序](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-3/KuroCat-OrcaCat-Windows-x64.exe)
+
+![虎鲸猫图标栏、键鼠模式和闭眼听音乐](assets/preview_orca_cat_controls.png)
 
 <p align="center">
   <img src="assets/demo_typing.gif" width="265" alt="敲键盘打字"/>

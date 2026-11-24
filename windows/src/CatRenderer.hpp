@@ -15,9 +15,86 @@ enum class CatHitZone {
     Body, LeftEar, RightEar, Belly
 };
 
+enum class PetControl { None, Treat, Sleep, Wake, Music, Auto, Keyboard, Tablet, KeyBubbles, MouseBubbles, Hide };
+
 class CatRenderer {
 public:
     static constexpr float RadToDeg = 57.2957795f;
+
+    static float canvasHeight(const CatSettings& settings) {
+        return settings.showControls ? 342.0f : CatPhysics::CanvasHeight;
+    }
+
+    static PetControl controlAt(Pt point) {
+        if (point.y < controlTop || point.y >= controlTop + controlHeight) return PetControl::None;
+        for (const auto& button : controlButtons) {
+            if (point.x >= button.x && point.x < button.x + button.width) return button.control;
+        }
+        return PetControl::None;
+    }
+
+    static bool controlEnabled(PetControl control, const CatPhysics& physics) {
+        switch (control) {
+            case PetControl::Treat: return !physics.feeding();
+            case PetControl::Sleep: return !physics.resting();
+            case PetControl::Wake: return physics.resting();
+            default: return true;
+        }
+    }
+
+    static void drawControls(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings,
+                             PetControl hover = PetControl::None, PetControl held = PetControl::None,
+                             bool showTip = false) {
+        using namespace Gdiplus;
+        const auto colors = keyboardColors(settings.keyboardTheme);
+        GraphicsPath shell;
+        addRoundedRect(shell, 61.0f, controlTop - 3.0f, 237.0f, controlHeight + 7.0f, 6.0f);
+        SolidBrush deck(colors.base);
+        g.FillPath(&deck, &shell);
+
+        const Color gold = eyePrimary(settings.eyeTheme);
+        const Color ink = settings.keyboardTheme == KeyboardTheme::MidnightHacker ? rgb(0xF0EEE8) : rgb(0x28262B);
+        const ControlButton* described = nullptr;
+        for (const auto& button : controlButtons) {
+            bool enabled = controlEnabled(button.control, physics);
+            bool active = button.control == PetControl::Music ? physics.listening() : controlActive(button.control, settings);
+            bool pressing = enabled && hover == button.control && held == button.control;
+            float top = controlTop + (pressing ? 1.5f : 0.0f);
+            Color fill = active ? blendColor(colors.cap, gold, 0.78f) : colors.cap;
+            if (!enabled) fill = blendColor(fill, colors.deck, 0.31f);
+            if (enabled && hover == button.control) fill = blendColor(fill, gold, active ? 0.13f : 0.28f);
+            if (pressing) fill = blendColor(fill, colors.base, 0.10f);
+
+            GraphicsPath key;
+            addRoundedRect(key, button.x, top, button.width, controlHeight - 1.5f, 4.0f);
+            SolidBrush cap(fill);
+            g.FillPath(&cap, &key);
+            Pen rim(active ? blendColor(gold, colors.base, 0.23f) : colors.border, 0.65f);
+            g.DrawPath(&rim, &key);
+            Color symbol = active ? rgb(0x292324) : ink;
+            auto state = g.Save();
+            g.TranslateTransform(button.x + button.width * 0.5f, top + (controlHeight - 1.5f) * 0.5f);
+            drawControlSymbol(g, button.control, enabled ? symbol : blendColor(symbol, fill, 0.57f));
+            g.Restore(state);
+            if (showTip && button.control == hover) described = &button;
+        }
+        if (described) {
+            Font label(L"Microsoft YaHei UI", 10.2f, FontStyleRegular, UnitPixel);
+            RectF measured;
+            g.MeasureString(described->label, -1, &label, PointF(0, 0), &measured);
+            float width = measured.Width + 10.0f;
+            float left = described->x + described->width * 0.5f - width * 0.5f;
+            RectF bounds(left, controlTop - 26.0f, width, 20.0f);
+            GraphicsPath tip;
+            addRoundedRect(tip, bounds.X, bounds.Y, bounds.Width, bounds.Height, 5.0f);
+            g.FillPath(&deck, &tip);
+            SolidBrush text(rgb(0xFAF5E8));
+            StringFormat centered;
+            centered.SetAlignment(StringAlignmentCenter);
+            centered.SetLineAlignment(StringAlignmentCenter);
+            g.DrawString(described->label, -1, &label, bounds, &centered, &text);
+        }
+    }
 
     static CatHitZone hitTest(Pt p, const CatPhysics& physics, CatCoatTheme coat) {
         float cx = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
@@ -118,7 +195,7 @@ public:
 
         // 9. Floating Keycap Badges (keyboard + mouse clicks)
         if (!physics.floatingKeycaps.empty()) {
-            drawFloatingKeycaps(g, physics);
+            drawFloatingKeycaps(g, physics, settings);
         }
 
         // 10. Subtle Petting Sparkles & Sleep Z
@@ -127,6 +204,123 @@ public:
 
 private:
     enum class Limb { LeftForeleg, RightForeleg, HindLeg };
+
+    struct ControlButton { PetControl control; float x, width; const wchar_t* label; };
+    static constexpr float controlTop = 312.0f;
+    static constexpr float controlHeight = 22.0f;
+    static constexpr ControlButton controlButtons[] = {
+        {PetControl::Treat, 64, 20, L"喂零食"}, {PetControl::Sleep, 87, 20, L"白天不熬猫"},
+        {PetControl::Wake, 110, 20, L"晚上猫熬人"}, {PetControl::Music, 133, 20, L"听音乐"},
+        {PetControl::Auto, 158, 20, L"自动识别"}, {PetControl::Keyboard, 181, 20, L"键盘模式"},
+        {PetControl::Tablet, 204, 20, L"数位板模式"}, {PetControl::KeyBubbles, 229, 20, L"按键气泡"},
+        {PetControl::MouseBubbles, 252, 20, L"鼠标气泡"}, {PetControl::Hide, 275, 20, L"隐藏控件"}
+    };
+
+    static bool controlActive(PetControl control, const CatSettings& settings) {
+        switch (control) {
+            case PetControl::Auto: return settings.autoDeskMode;
+            case PetControl::Keyboard: return !settings.autoDeskMode && !settings.tabletMode;
+            case PetControl::Tablet: return !settings.autoDeskMode && settings.tabletMode;
+            case PetControl::KeyBubbles: return settings.showKeyBadges;
+            case PetControl::MouseBubbles: return settings.showMouseBadges;
+            default: return false;
+        }
+    }
+
+    static void drawControlSymbol(Gdiplus::Graphics& g, PetControl control, Gdiplus::Color color) {
+        using namespace Gdiplus;
+        Pen pen(color, 1.25f);
+        pen.SetStartCap(LineCapRound);
+        pen.SetEndCap(LineCapRound);
+        pen.SetLineJoin(LineJoinRound);
+        SolidBrush ink(color);
+        auto rounded = [&](float x, float y, float w, float h, float r) {
+            GraphicsPath shape;
+            addRoundedRect(shape, x, y, w, h, r);
+            g.DrawPath(&pen, &shape);
+        };
+        auto bubble = [&] {
+            const PointF points[] = {{-7,-6},{7,-6},{7,3},{-1,3},{-5,6},{-5,3},{-7,3},{-7,-6}};
+            g.DrawLines(&pen, points, 8);
+        };
+        switch (control) {
+            case PetControl::Treat: {
+                g.DrawLine(&pen, -2.0f, 1.0f, -5.0f, 4.0f);
+                g.FillEllipse(&ink, -7.4f, 2.3f, 3.5f, 3.4f);
+                g.FillEllipse(&ink, -5.3f, 4.4f, 3.1f, 3.1f);
+                GraphicsPath meat;
+                meat.AddBezier(-3.0f, 2.0f, -5.3f, 0.0f, -2.1f, -6.2f, 1.7f, -7.0f);
+                meat.AddBezier(1.7f, -7.0f, 5.7f, -8.1f, 8.2f, -3.9f, 5.8f, -0.9f);
+                meat.AddBezier(5.8f, -0.9f, 3.8f, 2.1f, -1.0f, 4.3f, -3.0f, 2.0f);
+                meat.CloseFigure();
+                SolidBrush glaze(blendColor(color, rgb(0xC28655, color.GetA()), 0.77f));
+                g.FillPath(&glaze, &meat);
+                g.DrawPath(&pen, &meat);
+                break;
+            }
+            case PetControl::Sleep: {
+                const PointF large[]={{-7,-1},{-2,-1},{-7,5},{-2,5}};
+                const PointF mid[]={{0,-4},{4,-4},{0.2f,0.4f},{4,0.4f}};
+                const PointF smallestZ[]={{5.3f,-7},{8,-7},{5.3f,-4},{8,-4}};
+                g.DrawLines(&pen, large, 4);
+                g.DrawLines(&pen, mid, 4);
+                g.DrawLines(&pen, smallestZ, 4);
+                break;
+            }
+            case PetControl::Wake:
+                g.DrawEllipse(&pen, -3.5f, -3.5f, 7.0f, 7.0f);
+                for (int i = 0; i < 8; ++i) {
+                    float angle = i * 0.7853982f;
+                    float x = std::cos(angle), y = std::sin(angle);
+                    g.DrawLine(&pen, x * 5.3f, y * 5.3f, x * 7.4f, y * 7.4f);
+                }
+                break;
+            case PetControl::Music:
+                g.DrawArc(&pen, -6.3f, -6.6f, 12.6f, 13.2f, 180.0f, 180.0f);
+                rounded(-7.4f, -0.7f, 3.8f, 6.5f, 1.4f);
+                rounded(3.6f, -0.7f, 3.8f, 6.5f, 1.4f);
+                break;
+            case PetControl::Auto: {
+                g.DrawArc(&pen, -6.8f, -6.8f, 13.6f, 13.6f, 192.0f, 153.0f);
+                g.DrawArc(&pen, -6.8f, -6.8f, 13.6f, 13.6f, 12.0f, 153.0f);
+                const PointF top[]={{3.8f,-3.0f},{6.6f,-1.2f},{7.5f,-4.4f}};
+                const PointF bottom[]={{-3.8f,3.0f},{-6.6f,1.2f},{-7.5f,4.4f}};
+                g.DrawLines(&pen, top, 3);
+                g.DrawLines(&pen, bottom, 3);
+                break;
+            }
+            case PetControl::Keyboard:
+                rounded(-7.5f, -5.0f, 15.0f, 10.0f, 2.1f);
+                for (int i = -1; i <= 1; ++i) g.FillEllipse(&ink, i * 4.5f - 0.7f, -2.5f, 1.4f, 1.4f);
+                g.DrawLine(&pen, -4.0f, 2.0f, 4.0f, 2.0f);
+                break;
+            case PetControl::Tablet:
+                rounded(-7.7f, -4.8f, 15.4f, 10.5f, 2.0f);
+                g.DrawLine(&pen, -0.4f, 2.7f, 5.9f, -6.5f);
+                g.FillEllipse(&ink, -5.5f, -2.9f, 1.8f, 1.8f);
+                break;
+            case PetControl::KeyBubbles:
+                bubble();
+                rounded(-3.1f, -4.2f, 6.2f, 5.3f, 1.0f);
+                g.DrawLine(&pen, -1.2f, -1.0f, 1.2f, -1.0f);
+                break;
+            case PetControl::MouseBubbles:
+                bubble();
+                rounded(-2.2f, -4.5f, 4.8f, 6.4f, 2.1f);
+                g.DrawLine(&pen, 0.2f, -3.6f, 0.2f, -2.0f);
+                break;
+            case PetControl::Hide: {
+                GraphicsPath eye;
+                eye.AddBezier(-7.6f, 0.0f, -3.6f, -6.3f, 3.6f, -6.3f, 7.6f, 0.0f);
+                eye.AddBezier(7.6f, 0.0f, 3.6f, 6.3f, -3.6f, 6.3f, -7.6f, 0.0f);
+                g.DrawPath(&pen, &eye);
+                g.DrawEllipse(&pen, -2.2f, -2.2f, 4.4f, 4.4f);
+                g.DrawLine(&pen, -6.0f, 6.4f, 6.0f, -6.4f);
+                break;
+            }
+            case PetControl::None: break;
+        }
+    }
 
     static Gdiplus::Color catBlack(BYTE a = 255)      { return Gdiplus::Color(a, 22, 22, 24); }
     static Gdiplus::Color contourMint(BYTE a = 194)   { return Gdiplus::Color(a, 209, 235, 227); }
@@ -141,6 +335,21 @@ private:
     static bool patterned(CatCoatTheme c) { return c == CatCoatTheme::Shorthair || c == CatCoatTheme::OrangeWhite; }
     static bool hasWhiteSocks(CatCoatTheme c) { return c == CatCoatTheme::OrcaCat || patterned(c); }
     static Gdiplus::Color rgb(unsigned int hex, BYTE a = 255) { return Gdiplus::Color(a, (hex >> 16) & 255, (hex >> 8) & 255, hex & 255); }
+
+    struct KeyboardColors {
+        Gdiplus::Color base, deck, cap, border, accent;
+    };
+
+    static KeyboardColors keyboardColors(KeyboardTheme theme) {
+        if (theme == KeyboardTheme::MidnightHacker) {
+            return {rgb(0x0F0F14), rgb(0x1A1C21), rgb(0x363840), rgb(0x1C1C21, 242), rgb(0xC4F040)};
+        }
+        if (theme == KeyboardTheme::RetroCream) {
+            return {rgb(0x403D38), rgb(0x615C54), rgb(0xE6E0D1), rgb(0xADA69A, 216), rgb(0xE06B3D)};
+        }
+        return {rgb(0x1A1A1F), rgb(0x242429), rgb(0xF7F6F0), rgb(0xC7C4BD, 190), rgb(0xF7B329)};
+    }
+
     static Gdiplus::Color bodyColor(CatCoatTheme c) { return c == CatCoatTheme::Shorthair ? rgb(0xC2C5C1) : (c == CatCoatTheme::OrangeWhite ? rgb(0xF2EEE4) : catBlack()); }
     static Gdiplus::Color limbColor(CatCoatTheme c) { return c == CatCoatTheme::OrangeWhite ? rgb(0xD8AA73) : bodyColor(c); }
     static Gdiplus::Color pawColor(CatCoatTheme c) {
@@ -337,17 +546,7 @@ private:
             g.FillPath(&sb, &sp);
         }
 
-        Color baseCol, deckCol, keyCol, borderCol, accentCol;
-        if (theme == KeyboardTheme::MidnightHacker) {
-            baseCol = Color(255, 15, 15, 20); deckCol = Color(255, 26, 28, 33);
-            keyCol = Color(255, 54, 56, 64); borderCol = Color(242, 28, 28, 33); accentCol = Color(255, 196, 240, 64);
-        } else if (theme == KeyboardTheme::RetroCream) {
-            baseCol = Color(255, 64, 61, 56); deckCol = Color(255, 97, 92, 84);
-            keyCol = Color(255, 230, 224, 209); borderCol = Color(216, 173, 166, 153); accentCol = Color(255, 224, 107, 61);
-        } else {
-            baseCol = Color(255, 26, 26, 31); deckCol = Color(255, 36, 36, 41);
-            keyCol = Color(255, 247, 246, 240); borderCol = Color(190, 199, 196, 189); accentCol = Color(255, 247, 179, 41);
-        }
+        const auto [baseCol, deckCol, keyCol, borderCol, accentCol] = keyboardColors(theme);
 
         {
             GraphicsPath lp;
@@ -692,7 +891,38 @@ private:
         drawEye3D(g, true, yawRad, pitchRad, physics, eyeTheme, coat);
         drawEye3D(g, false, yawRad, pitchRad, physics, eyeTheme, coat);
         drawWhiskers3D(g, yawRad, pitchRad, physics, coat);
+        if (physics.headphones() > 0.015f) drawHeadphones(g, physics.headphones(), yawRad, eyeTheme);
         g.Restore(st);
+    }
+
+    static void drawHeadphones(Gdiplus::Graphics& g, float fit, float yaw, EyeColorTheme eyes) {
+        using namespace Gdiplus;
+        const BYTE opacity = (BYTE)(255.0f * fit);
+        const float offset = 9.0f * (1.0f - fit);
+        auto color = [opacity](unsigned int hex) { return rgb(hex, opacity); };
+        auto saved = g.Save();
+        g.TranslateTransform(yaw * 5.5f, -offset);
+        GraphicsPath band;
+        band.AddBezier(-43.0f, -8.0f, -43.0f, -47.0f, 43.0f, -47.0f, 43.0f, -8.0f);
+        Pen edge(color(0x171D27), 7.7f);
+        Pen padding(color(0x536172), 4.8f);
+        g.DrawPath(&edge, &band);
+        g.DrawPath(&padding, &band);
+        SolidBrush foam(color(0x19212B)), shell(color(0x394757));
+        Pen rim(color(0x6C7D8C), 0.9f);
+        SolidBrush trim(eyePrimary(eyes, opacity));
+        for (float direction : {-1.0f, 1.0f}) {
+            GraphicsPath pad, cup, accent;
+            float x = direction * (41.3f + offset * 0.32f);
+            addRoundedRect(pad, x - 8.0f, -10.0f, 16.0f, 24.0f, 6.0f);
+            addRoundedRect(cup, x - 5.75f + direction, -8.5f, 11.5f, 20.5f, 4.7f);
+            addRoundedRect(accent, x - 1.45f + direction * 2.5f, -4.8f, 2.9f, 10.0f, 1.4f);
+            g.FillPath(&foam, &pad);
+            g.FillPath(&shell, &cup);
+            g.DrawPath(&rim, &cup);
+            g.FillPath(&trim, &accent);
+        }
+        g.Restore(saved);
     }
 
     static void drawOrcaMuzzle(Gdiplus::Graphics& g, float yaw, float pitch) {
@@ -743,7 +973,7 @@ private:
         g.TranslateTransform(proj.x, proj.y);
         g.ScaleTransform(foreX, foreY);
 
-        float relaxed = std::max(physics.sleepiness, physics.washLift());
+        float relaxed = std::max({physics.sleepiness, physics.washLift(), physics.musicEyes()});
         if (relaxed > 0.68f) {
             GraphicsPath lid;
             addQuadBezier(lid, {-9.5f, 2.0f}, {0.0f, 8.4f}, {9.5f, 2.0f});
@@ -1179,7 +1409,7 @@ private:
 
     // MARK: - Floating Mechanical Keycaps
 
-    static void drawFloatingKeycaps(Gdiplus::Graphics& g, const CatPhysics& physics) {
+    static void drawFloatingKeycaps(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings) {
         using namespace Gdiplus;
         FontFamily ff(L"Segoe UI");
         StringFormat sf;
@@ -1187,6 +1417,7 @@ private:
         sf.SetLineAlignment(StringAlignmentCenter);
 
         for (const auto& b : physics.floatingKeycaps) {
+            if (b.mouse ? !settings.showMouseBadges : !settings.showKeyBadges) continue;
             float prog = b.age / b.lifetime;
             float scale = 1.0f;
             if (b.age < 0.09f) {

@@ -19,6 +19,7 @@
 #include "CatPhysics.hpp"
 #include "CatRenderer.hpp"
 #include "DeskMode.hpp"
+#include "AudioBeat.hpp"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -80,10 +81,12 @@ enum MenuCmd : UINT {
     CMD_CHECK_UPDATE,
     CMD_RELAUNCH_ADMIN,
     CMD_TOGGLE_RUN_AS_ADMIN,
-    CMD_AUTO_DESK, CMD_TABLET_MODE, CMD_CLEAR_TABLET,
+    CMD_AUTO_DESK, CMD_KEYBOARD_MODE, CMD_TABLET_MODE, CMD_CLEAR_TABLET,
     CMD_QUIT,
     CMD_TOGGLE_SLEEP,
-    CMD_TREAT
+    CMD_TREAT,
+    CMD_TOGGLE_CONTROLS,
+    CMD_MUSIC
 };
 
 struct AppState {
@@ -95,9 +98,13 @@ struct AppState {
     std::shared_ptr<desk::Monitor> deskMonitor;
     InputEngine input;
     CatPhysics physics;
+    AudioBeat audioBeat;
 
     bool isVisible = true;
     bool isDragging = false;
+    PetControl heldControl = PetControl::None;
+    PetControl hoveredControl = PetControl::None;
+    double controlHoverSince = 0.0;
     POINT dragStartCursor = {};
     POINT dragStartWinOrigin = {};
     bool hasLastHover = false;
@@ -402,7 +409,7 @@ void computeDefaultOrigin(int w, int h, int& outX, int& outY) {
 
 void applyWindowScaleAndPosition(AppState& app, bool anchorBottomCenter, bool persist = true) {
     int newW = (int)std::round(CatPhysics::CanvasWidth * app.settings.scale);
-    int newH = (int)std::round(CatPhysics::CanvasHeight * app.settings.scale);
+    int newH = (int)std::round(CatRenderer::canvasHeight(app.settings) * app.settings.scale);
 
     int x = app.settings.posX;
     int y = app.settings.posY;
@@ -424,6 +431,13 @@ void applyWindowScaleAndPosition(AppState& app, bool anchorBottomCenter, bool pe
     int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
     if (x + newW < vx + 40 || x > vx + vw - 40 || y + newH < vy + 40 || y > vy + vh - 40) {
         computeDefaultOrigin(newW, newH, x, y);
+    }
+    if (app.settings.showControls) {
+        RECT bounds{x, y, x + newW, y + newH};
+        MONITORINFO monitor{sizeof(monitor)};
+        if (GetMonitorInfoW(MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST), &monitor)) {
+            y = std::min(y, (int)monitor.rcWork.bottom - newH);
+        }
     }
 
     HWND insertAfter = app.settings.alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST;
@@ -523,6 +537,21 @@ void setClickThrough(HWND hwnd, bool transparent) {
     }
 }
 
+Pt canvasPoint(POINT local, const RECT& bounds, const CatSettings& settings) {
+    return {local.x * CatPhysics::CanvasWidth / std::max(1L, bounds.right - bounds.left),
+            local.y * CatRenderer::canvasHeight(settings) / std::max(1L, bounds.bottom - bounds.top)};
+}
+
+PetControl controlAt(Pt point, const CatSettings& settings) {
+    return settings.showControls ? CatRenderer::controlAt(point) : PetControl::None;
+}
+
+bool mouseIsUnlocked(const AppState& app) {
+    return !app.settings.fullClickThrough || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+}
+
+void runCommand(AppState& app, UINT cmd);
+
 void showContextMenu(AppState& app, POINT screenPt) {
     HMENU menu = CreatePopupMenu();
 
@@ -544,6 +573,8 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_STRING, CMD_TOGGLE_VISIBLE, app.isVisible ? L"\u9690\u85CF\u5C0F\u732B" : L"\u663E\u793A\u5C0F\u732B");
     AppendMenuW(menu, MF_STRING, CMD_TOGGLE_SLEEP, app.physics.resting() ? L"晚上猫熬人" : L"白天不熬猫");
     AppendMenuW(menu, MF_STRING | (app.physics.feeding() ? MF_GRAYED : 0), CMD_TREAT, L"喂零食");
+    AppendMenuW(menu, MF_STRING | (app.physics.listening() ? MF_CHECKED : 0), CMD_MUSIC, L"听音乐");
+    AppendMenuW(menu, MF_STRING, CMD_TOGGLE_CONTROLS, app.settings.showControls ? L"隐藏控件" : L"显示控件");
     AppendMenuW(menu, MF_STRING | (app.settings.fullClickThrough ? MF_CHECKED : 0), CMD_TOGGLE_CLICKTHROUGH, L"\u5B8C\u5168\u9F20\u6807\u7A7F\u900F (Ctrl+Alt+Shift+P / \u6309\u4F4FAlt\u53EF\u53F3\u952E)");
     AppendMenuW(menu, MF_STRING | (app.settings.alwaysOnTop ? MF_CHECKED : 0), CMD_TOGGLE_TOPMOST, L"\u7A97\u53E3\u7F6E\u9876\u663E\u793A");
     AppendMenuW(menu, MF_STRING | (isAutoStartEnabled() ? MF_CHECKED : 0), CMD_TOGGLE_AUTOSTART, L"\u5F00\u673A\u81EA\u52A8\u542F\u52A8");
@@ -573,10 +604,10 @@ void showContextMenu(AppState& app, POINT screenPt) {
 
     AppendMenuW(menu, MF_STRING | (app.settings.autoDeskMode ? MF_CHECKED : 0),
                 CMD_AUTO_DESK, L"自动识别绘画窗口和文字输入");
-    AppendMenuW(menu, MF_STRING | (app.settings.tabletMode ? MF_CHECKED : 0),
-                CMD_TABLET_MODE, app.settings.autoDeskMode
-                    ? (app.settings.tabletMode ? L"当前：手绘板（点击固定为键鼠）" : L"当前：键鼠（点击固定为手绘板）")
-                    : L"手绘板模式");
+    AppendMenuW(menu, MF_STRING | (!app.settings.autoDeskMode && !app.settings.tabletMode ? MF_CHECKED : 0),
+                CMD_KEYBOARD_MODE, L"键盘模式");
+    AppendMenuW(menu, MF_STRING | (!app.settings.autoDeskMode && app.settings.tabletMode ? MF_CHECKED : 0),
+                CMD_TABLET_MODE, L"数位板模式");
     if (app.settings.tabletMode)
         AppendMenuW(menu, MF_STRING, CMD_CLEAR_TABLET, L"清空画板");
 
@@ -620,10 +651,46 @@ void showContextMenu(AppState& app, POINT screenPt) {
     UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPt.x, screenPt.y, 0, menuOwner, nullptr);
     PostMessageW(menuOwner, WM_NULL, 0, 0);
     DestroyMenu(menu);
+    runCommand(app, cmd);
+}
 
+void stopListening(AppState& app) {
+    app.audioBeat.stop();
+    app.physics.listenToMusic(false);
+}
+
+void runCommand(AppState& app, UINT cmd) {
+    switch (cmd) {
+        case CMD_TOGGLE_SLEEP:
+        case CMD_TREAT:
+        case CMD_TOGGLE_VISIBLE:
+        case CMD_TOGGLE_CONTROLS:
+        case CMD_TOGGLE_BADGES:
+        case CMD_TOGGLE_MOUSE_BADGES:
+        case CMD_AUTO_DESK:
+        case CMD_KEYBOARD_MODE:
+        case CMD_TABLET_MODE:
+            if (app.physics.listening()) stopListening(app);
+            break;
+        default:
+            break;
+    }
     const auto previousCoat = app.settings.coatTheme;
     const auto previousEyes = app.settings.eyeTheme;
     switch (cmd) {
+        case CMD_MUSIC:
+            if (app.physics.listening()) {
+                stopListening(app);
+            } else if (app.audioBeat.start()) {
+                app.physics.listenToMusic(true);
+                if (!app.isVisible) {
+                    app.isVisible = true;
+                    ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
+                }
+            } else {
+                showTrayBalloon(app, L"KuroCat 听音乐", L"无法启动系统声音监听。");
+            }
+            break;
         case CMD_TOGGLE_SLEEP:
             if (app.physics.resting()) app.physics.wakeUp();
             else app.physics.goToSleep();
@@ -634,6 +701,10 @@ void showContextMenu(AppState& app, POINT screenPt) {
                 app.isVisible = true;
                 ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
             }
+            break;
+        case CMD_TOGGLE_CONTROLS:
+            app.settings.showControls = !app.settings.showControls;
+            applyWindowScaleAndPosition(app, false);
             break;
         case CMD_TOGGLE_VISIBLE:
             app.isVisible = !app.isVisible;
@@ -664,16 +735,15 @@ void showContextMenu(AppState& app, POINT screenPt) {
             app.settings.saveToRegistry();
             break;
         case CMD_AUTO_DESK:
-            app.settings.autoDeskMode = !app.settings.autoDeskMode;
+        case CMD_KEYBOARD_MODE:
+        case CMD_TABLET_MODE:
+            app.settings.autoDeskMode = cmd == CMD_AUTO_DESK;
+            if (!app.settings.autoDeskMode) app.settings.tabletMode = cmd == CMD_TABLET_MODE;
             app.deskMonitor->result = -1;
             app.deskMonitor->enabled = app.settings.autoDeskMode;
-            app.settings.saveToRegistry();
-            break;
-        case CMD_TABLET_MODE:
-            app.settings.autoDeskMode = false;
-            app.deskMonitor->enabled = false;
-            app.settings.tabletMode = !app.settings.tabletMode;
             app.physics.penDown = false;
+            app.physics.latestTabletKey = -1;
+            app.physics.floatingKeycaps.clear();
             app.settings.saveToRegistry();
             break;
         case CMD_CLEAR_TABLET:
@@ -762,6 +832,23 @@ void showContextMenu(AppState& app, POINT screenPt) {
     }
 }
 
+void runControl(AppState& app, PetControl button) {
+    if (!CatRenderer::controlEnabled(button, app.physics)) return;
+    switch (button) {
+        case PetControl::Treat: runCommand(app, CMD_TREAT); break;
+        case PetControl::Sleep:
+        case PetControl::Wake: runCommand(app, CMD_TOGGLE_SLEEP); break;
+        case PetControl::Music: runCommand(app, CMD_MUSIC); break;
+        case PetControl::Auto: runCommand(app, CMD_AUTO_DESK); break;
+        case PetControl::Keyboard: runCommand(app, CMD_KEYBOARD_MODE); break;
+        case PetControl::Tablet: runCommand(app, CMD_TABLET_MODE); break;
+        case PetControl::KeyBubbles: runCommand(app, CMD_TOGGLE_BADGES); break;
+        case PetControl::MouseBubbles: runCommand(app, CMD_TOGGLE_MOUSE_BADGES); break;
+        case PetControl::Hide: runCommand(app, CMD_TOGGLE_CONTROLS); break;
+        case PetControl::None: break;
+    }
+}
+
 bool physicsLooksSane(const CatPhysics& p) {
     const float vals[] = {
         p.leftPaw.x.value, p.leftPaw.y.value, p.rightPaw.x.value, p.rightPaw.y.value,
@@ -804,6 +891,15 @@ void tickAndRender(AppState& app) {
     GetWindowRect(app.hwnd, &wr);
     int w = std::max(1, (int)(wr.right - wr.left));
     int h = std::max(1, (int)(wr.bottom - wr.top));
+    POINT cursor = {};
+    GetCursorPos(&cursor);
+    Pt cp = canvasPoint({cursor.x - wr.left, cursor.y - wr.top}, wr, app.settings);
+    bool unlocked = mouseIsUnlocked(app);
+    PetControl hover = unlocked && !app.isDragging ? controlAt(cp, app.settings) : PetControl::None;
+    if (hover != app.hoveredControl || app.heldControl != PetControl::None) {
+        app.hoveredControl = hover;
+        app.controlHoverSince = now;
+    }
 
     int detected = app.deskMonitor->result.load();
     if (app.settings.autoDeskMode && detected >= 0 && app.settings.tabletMode != (detected == 1)) {
@@ -812,24 +908,24 @@ void tickAndRender(AppState& app) {
         app.physics.latestTabletKey = -1;
         app.physics.floatingKeycaps.clear();
     }
-    app.physics.step(dt, wr, app.input, app.settings);
+    if (app.audioBeat.failed()) {
+        stopListening(app);
+        showTrayBalloon(app, L"KuroCat 听音乐", L"无法读取当前的系统音频输出。");
+    }
+    app.physics.step(dt, wr, app.input, app.settings, hover != PetControl::None || app.heldControl != PetControl::None,
+                     app.audioBeat.pulse(), app.audioBeat.audible());
     if (!physicsLooksSane(app.physics)) {
         // A single non-finite value would otherwise make every later frame draw nothing (the cat
         // "vanishes" until restart). Rebuild the pose but keep the session statistics.
         int pets = app.physics.totalPetSessions;
+        stopListening(app);
         app.physics = CatPhysics();
         app.physics.totalPetSessions = pets;
     }
 
     // Smart Click-Through + Petting Detection
-    if (!app.isDragging) {
-        POINT cur = {};
-        GetCursorPos(&cur);
-        if (PtInRect(&wr, cur)) {
-            Pt cp = {
-                (float)(cur.x - wr.left) / (float)w * CatPhysics::CanvasWidth,
-                (float)(cur.y - wr.top)  / (float)h * CatPhysics::CanvasHeight
-            };
+    if (!app.isDragging && app.heldControl == PetControl::None) {
+        if (PtInRect(&wr, cursor)) {
             CatHitZone zone = CatRenderer::hitTest(cp, app.physics, app.settings.coatTheme);
             if (app.settings.tabletMode && cp.y >= 230.f && cp.y <= 296.f && cp.x >= CatPhysics::keypadLeft && cp.x <= 325.f)
                 zone = CatHitZone::None; // Let the underlying drawing app receive pen strokes.
@@ -847,10 +943,8 @@ void tickAndRender(AppState& app) {
             } else {
                 app.hasLastHover = false;
             }
-            // Holding Alt temporarily unlocks click-through so user can ALWAYS right-click or drag the cat!
-            bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
             bool overKey = app.settings.tabletMode && app.physics.usingDesk() && CatPhysics::tabletKeyAt(cp) >= 0;
-            bool clickThrough = (app.settings.fullClickThrough && !altHeld) || (zone == CatHitZone::None && !overKey);
+            bool clickThrough = !unlocked || (zone == CatHitZone::None && !overKey && hover == PetControl::None);
             setClickThrough(app.hwnd, clickThrough);
         } else {
             app.hasLastHover = false;
@@ -865,8 +959,11 @@ void tickAndRender(AppState& app) {
     Gdiplus::Bitmap bmp(w, h, w * 4, PixelFormat32bppPARGB, static_cast<BYTE*>(app.dibBits));
     Gdiplus::Graphics g(&bmp);
     g.Clear(Gdiplus::Color(0, 0, 0, 0));
-    g.ScaleTransform((float)w / CatPhysics::CanvasWidth, (float)h / CatPhysics::CanvasHeight);
+    g.ScaleTransform((float)w / CatPhysics::CanvasWidth, (float)h / CatRenderer::canvasHeight(app.settings));
     CatRenderer::draw(g, app.physics, app.settings);
+    if (app.settings.showControls) {
+        CatRenderer::drawControls(g, app.physics, app.settings, hover, app.heldControl, now - app.controlHoverSince > 0.46);
+    }
 
     POINT ptDst = { wr.left, wr.top };
     SIZE szWnd = { w, h };
@@ -957,15 +1054,20 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_LBUTTONDOWN: {
             bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
             if (app && (!app->settings.fullClickThrough || altHeld)) {
+                RECT bounds{};
+                GetClientRect(hwnd, &bounds);
+                Pt point = canvasPoint({short(LOWORD(lParam)), short(HIWORD(lParam))}, bounds, app->settings);
+                PetControl button = controlAt(point, app->settings);
+                if (button != PetControl::None) {
+                    app->heldControl = button;
+                    SetCapture(hwnd);
+                    return 0;
+                }
                 if (app->physics.resting() && !altHeld) {
                     app->physics.wakeUp();
                     return 0;
                 }
                 if (app->settings.tabletMode && app->physics.usingDesk() && !altHeld) {
-                    RECT bounds{};
-                    GetClientRect(hwnd, &bounds);
-                    Pt point{short(LOWORD(lParam)) * CatPhysics::CanvasWidth / std::max(1L, bounds.right),
-                             short(HIWORD(lParam)) * CatPhysics::CanvasHeight / std::max(1L, bounds.bottom)};
                     int slot = CatPhysics::tabletKeyAt(point);
                     if (slot >= 0) {
                         app->physics.triggerKeyDown(app->physics.tabletKeys[slot].key, app->settings);
@@ -993,6 +1095,16 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_LBUTTONUP:
+            if (app && app->heldControl != PetControl::None) {
+                PetControl button = app->heldControl;
+                app->heldControl = PetControl::None;
+                ReleaseCapture();
+                RECT bounds{};
+                GetClientRect(hwnd, &bounds);
+                Pt point = canvasPoint({short(LOWORD(lParam)), short(HIWORD(lParam))}, bounds, app->settings);
+                if (mouseIsUnlocked(*app) && controlAt(point, app->settings) == button) runControl(*app, button);
+                return 0;
+            }
             if (app && app->isDragging) {
                 app->isDragging = false;
                 ReleaseCapture();
@@ -1002,6 +1114,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 app->settings.posY = wr.top;
                 app->settings.saveToRegistry();
             }
+            return 0;
+
+        case WM_CAPTURECHANGED:
+            if (app) app->heldControl = PetControl::None;
             return 0;
 
         case WM_RBUTTONUP:
@@ -1163,7 +1279,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         if (owner) {
             int runningVersion = (int)(INT_PTR)GetPropW(owner, VERSION_PROP);
             bool replace = forceTakeover || runningVersion < myVersion ||
-                           (runningVersion == myVersion && (INT_PTR)GetPropW(owner, L"KuroCatTabletMode") < 6);
+                           (runningVersion == myVersion && (INT_PTR)GetPropW(owner, L"KuroCatTabletMode") < 7);
             if (!replace || !shutDownRunningInstance(owner, 6000)) {
                 PostMessageW(owner, WM_WAKE_EXISTING, 0, 0);
                 if (hMutex) CloseHandle(hMutex);
@@ -1210,7 +1326,20 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     }
 
     app.input.onKeyDown = [&](PhysicalKey k) { app.physics.triggerKeyDown(k, app.settings); };
-    app.input.onMouseClick = [&](int btn, bool down) { app.physics.triggerMouseClick(btn, down, app.settings); };
+    app.input.onMouseClick = [&](int btn, bool down) {
+        if (app.isVisible && app.settings.showControls && mouseIsUnlocked(app)) {
+            RECT bounds{};
+            POINT cursor{};
+            GetWindowRect(app.hwnd, &bounds);
+            GetCursorPos(&cursor);
+            Pt point = canvasPoint({cursor.x - bounds.left, cursor.y - bounds.top}, bounds, app.settings);
+            if (app.heldControl != PetControl::None || controlAt(point, app.settings) != PetControl::None) {
+                if (!down && !app.settings.tabletMode) app.physics.triggerMouseClick(btn, false, app.settings);
+                return;
+            }
+        }
+        app.physics.triggerMouseClick(btn, down, app.settings);
+    };
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -1237,7 +1366,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         nullptr, nullptr, hInst, nullptr
     );
     if (app.menuOwnerHwnd) {
-        SetPropW(app.menuOwnerHwnd, L"KuroCatTabletMode", (HANDLE)6);
+        SetPropW(app.menuOwnerHwnd, L"KuroCatTabletMode", (HANDLE)7);
         SetPropW(app.menuOwnerHwnd, VERSION_PROP, (HANDLE)(INT_PTR)myVersion);
         // When elevated, UIPI would drop messages from the (non-elevated) taskbar and from a
         // re-launched KuroCat. Explicitly allow the few messages we rely on.
@@ -1247,7 +1376,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     }
 
     int initW = (int)std::round(CatPhysics::CanvasWidth * app.settings.scale);
-    int initH = (int)std::round(CatPhysics::CanvasHeight * app.settings.scale);
+    int initH = (int)std::round(CatRenderer::canvasHeight(app.settings) * app.settings.scale);
     int initX = 0, initY = 0;
     if (app.settings.posX != -99999 && app.settings.posY != -99999) {
         initX = app.settings.posX; initY = app.settings.posY;
