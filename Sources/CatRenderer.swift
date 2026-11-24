@@ -64,8 +64,9 @@ enum CatRenderer {
         }
         if bowlAt(p, physics: physics) { return .bowl }
 
-        let cx = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
-        let headCenter = headPosition(seatX: cx, physics: physics)
+        let seatX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
+        let cx = seatX - sin(physics.turn * .pi) * 11
+        let headCenter = headPosition(seatX: seatX, physics: physics)
         let dx = p.x - headCenter.x, dy = p.y - headCenter.y
         let tilt = physics.headTilt.value
         let local = CGPoint(x: dx * cos(tilt) + dy * sin(tilt), y: dy * cos(tilt) - dx * sin(tilt))
@@ -92,8 +93,9 @@ enum CatRenderer {
             return .desk
         }
 
-        let bdx = (p.x - cx) / 58.0
-        let bdy = (p.y - 196.0) / 56.0
+        let puff = physics.furPuff
+        let bdx = (p.x - cx) / (58 + 16 * puff)
+        let bdy = (p.y - 196 + 16 * puff) / (56 + 11 * puff)
         if bdx * bdx + bdy * bdy <= 1.0 {
             return .body
         }
@@ -169,7 +171,13 @@ enum CatRenderer {
 
         // 9. Subtle Petting Sparkles / Sleep Z
         drawSparkles(in: ctx, physics: physics, eyeTheme: settings.eyeTheme)
-        drawAngerMark(in: ctx, head: headCenter, progress: physics.angerMarkProgress)
+        if physics.facingAway {
+            let phase = physics.backAngerPhase
+            drawAngerMark(in: ctx, head: headCenter, progress: phase)
+            drawAngerMark(in: ctx, head: headCenter, progress: (phase + 0.5).truncatingRemainder(dividingBy: 1), side: -1)
+        } else {
+            drawAngerMark(in: ctx, head: headCenter, progress: physics.angerMarkProgress)
+        }
 
         // 10. Optional non-intrusive Permission Pill if global monitoring not yet granted
         if showPermissionPill {
@@ -182,7 +190,7 @@ enum CatRenderer {
     static let controlsCanvasHeight: CGFloat = 352
 
     static func controlRect(_ action: PetAction) -> CGRect {
-        CGRect(x: 62 + CGFloat(action.rawValue) * 30, y: 322, width: 28, height: 22)
+        CGRect(x: 66 + CGFloat(action.rawValue) * 26, y: 322, width: 24, height: 22)
     }
 
     private static func controlSymbol(_ action: PetAction, mode: DeskMode) -> String {
@@ -190,6 +198,7 @@ enum CatRenderer {
         case .treat: return ""
         case .sleep: return "zzz"
         case .wake: return "sun.max"
+        case .doubleClickWake: return "cursorarrow.click.2"
         case .music: return "headphones"
         case .mode:
             switch mode {
@@ -204,7 +213,7 @@ enum CatRenderer {
     }
 
     static func drawControls(in ctx: CGContext, physics: CatPhysics, mode: DeskMode,
-                             keyBubbles: Bool, mouseBubbles: Bool, hover: PetAction?, held: PetAction?) {
+                             doubleClickWake: Bool, keyBubbles: Bool, mouseBubbles: Bool, hover: PetAction?, held: PetAction?) {
         let group = CGRect(x: 58, y: 318, width: 246, height: 30)
         fillRounded(in: ctx, group, radius: 9, color: rgb(0x242529, 0.92))
         NSGraphicsContext.saveGraphicsState()
@@ -212,6 +221,7 @@ enum CatRenderer {
         for action in PetAction.allCases {
             let rect = controlRect(action)
             let active = (action == .music && physics.listening) || action == .mode ||
+                (action == .doubleClickWake && doubleClickWake) ||
                 (action == .keyBubbles && keyBubbles) || (action == .mouseBubbles && mouseBubbles)
             if action == held || action == hover || active {
                 fillRounded(in: ctx, rect, radius: 5, color: rgb(0xF8BA59, action == held ? 0.32 : 0.15))
@@ -578,6 +588,26 @@ enum CatRenderer {
         }
     }
 
+    private static func cubicPoint(_ start: CGPoint, _ c1: CGPoint, _ c2: CGPoint, _ end: CGPoint, _ t: CGFloat) -> CGPoint {
+        let u = 1 - t
+        let a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t
+        return CGPoint(x: a * start.x + b * c1.x + c * c2.x + d * end.x,
+                       y: a * start.y + b * c1.y + c * c2.y + d * end.y)
+    }
+
+    private static func cubicTangent(_ start: CGPoint, _ c1: CGPoint, _ c2: CGPoint, _ end: CGPoint, _ t: CGFloat) -> CGPoint {
+        let u = 1 - t
+        let a = u * u, b = 2 * u * t, c = t * t
+        return CGPoint(x: a * (c1.x - start.x) + b * (c2.x - c1.x) + c * (end.x - c2.x),
+                       y: a * (c1.y - start.y) + b * (c2.y - c1.y) + c * (end.y - c2.y))
+    }
+
+    private static func furRipple(_ age: CGFloat, delay: CGFloat) -> CGFloat {
+        let phase = age - delay
+        guard phase > 0, phase < 0.55 else { return 0 }
+        return sin(phase * 27) * exp(-phase * 7.5) * CatPhysics.ease((0.55 - phase) / 0.15)
+    }
+
     // MARK: - Tail
 
     private static func drawTail(in ctx: CGContext, seatX: CGFloat, seatY: CGFloat, physics: CatPhysics, coat: CatCoatTheme) {
@@ -598,6 +628,11 @@ enum CatRenderer {
         var c2 = CGPoint(x: seatX + tipDirection * (66 + wag2 * 0.4) - curl * 26, y: seatY - 26 + wag1 * 0.7 + huntDrop + curl * 13)
         var tip = CGPoint(x: seatX + tipDirection * (91 + wag2 * 0.5) - curl * 16, y: seatY - 30 + wag1 * 0.85 + huntDrop + curl * 14)
         let impatient = physics.tailImpatience
+        let puff = physics.furPuff
+        func blend(_ point: CGPoint, to target: CGPoint, amount: CGFloat) -> CGPoint {
+            CGPoint(x: point.x + (target.x - point.x) * amount,
+                    y: point.y + (target.y - point.y) * amount)
+        }
         if impatient > 0.001 {
             let beat = physics.tailSlapTime.truncatingRemainder(dividingBy: 0.56) / 0.56
             func lift(_ phase: CGFloat) -> CGFloat {
@@ -605,38 +640,48 @@ enum CatRenderer {
             }
             let baseLift = lift(beat), middleLift = lift(beat - 0.08), tipLift = lift(beat - 0.14)
             let rebound = CatPhysics.ease((beat - 0.76) / 0.08) * (1 - CatPhysics.ease((beat - 0.84) / 0.13))
-            func blend(_ point: CGPoint, _ x: CGFloat, _ y: CGFloat) -> CGPoint {
-                CGPoint(x: point.x + (seatX + direction * x - point.x) * impatient,
-                        y: point.y + (seatY + y - point.y) * impatient)
+            func slap(_ point: CGPoint, _ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                blend(point, to: CGPoint(x: seatX + direction * x, y: seatY + y), amount: impatient)
             }
-            c1 = blend(c1, 61 - 11 * baseLift, 7 - 26 * baseLift)
-            c2 = blend(c2, 77 - 24 * middleLift, 15 - 69 * middleLift)
-            tip = blend(tip, 99 - 21 * tipLift - 5 * rebound, 11 - 59 * tipLift - 10 * rebound)
+            c1 = slap(c1, 61 - 11 * baseLift, 7 - 26 * baseLift)
+            c2 = slap(c2, 77 - 24 * middleLift, 15 - 69 * middleLift)
+            tip = slap(tip, 99 - 21 * tipLift - 5 * rebound, 11 - 59 * tipLift - 10 * rebound)
+        } else if physics.tailKeyReach > 0 {
+            let key = physics.tailKeyPoint
+            let reach = physics.tailKeyReach
+            c1 = blend(c1, to: CGPoint(x: seatX + 118, y: seatY - 35), amount: reach)
+            c2 = blend(c2, to: CGPoint(x: max(key.x + 46, seatX + 78), y: key.y + 34), amount: reach)
+            let keyY = key.y - 14 * (1 - physics.tailKeyDip)
+            tip = blend(tip, to: CGPoint(x: key.x, y: keyY), amount: reach)
         }
+        c1 = blend(c1, to: CGPoint(x: seatX + direction * 55, y: seatY + 4), amount: puff)
+        c2 = blend(c2, to: CGPoint(x: seatX + tipDirection * 80, y: seatY + 5), amount: puff)
+        tip = blend(tip, to: CGPoint(x: seatX + tipDirection * 93, y: seatY - 7 + wag1 * 0.30), amount: puff)
 
         ctx.saveGState()
-        let tailColor = earTailColor(coat)
-        ctx.setStrokeColor(tailColor.cgColor)
-        ctx.setLineWidth(11.0)
+        let width = 11 + 3.5 * puff
+        ctx.setStrokeColor(earTailColor(coat).cgColor)
+        ctx.setLineWidth(width)
         ctx.setLineCap(.round)
         ctx.setLineJoin(.round)
-        ctx.move(to: root)
-        ctx.addCurve(to: tip, control1: c1, control2: c2)
-        let tailLine = ctx.path
+        let line = CGMutablePath()
+        line.move(to: root)
+        line.addCurve(to: tip, control1: c1, control2: c2)
+        ctx.addPath(line)
         ctx.strokePath()
-        if patterned(coat), let line = tailLine {
+        if patterned(coat) {
+            let outline = line.copy(strokingWithWidth: width, lineCap: .round, lineJoin: .round, miterLimit: 10)
             ctx.saveGState()
-            ctx.addPath(line.copy(strokingWithWidth: 11, lineCap: .round, lineJoin: .round, miterLimit: 10))
+            ctx.addPath(outline)
             ctx.clip()
             ctx.setStrokeColor(rgb(coat == .shorthair ? 0x55595A : 0xA57543, 0.50).cgColor)
             ctx.setLineWidth(3.5); ctx.setLineCap(.butt)
             for t: CGFloat in [0.50, 0.78] {
-                let u = 1-t
-                let p = CGPoint(x: u*u*u*root.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*tip.x,
-                                y: u*u*u*root.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*tip.y)
-                let dx = 3*u*u*(c1.x-root.x)+6*u*t*(c2.x-c1.x)+3*t*t*(tip.x-c2.x)
-                let dy = 3*u*u*(c1.y-root.y)+6*u*t*(c2.y-c1.y)+3*t*t*(tip.y-c2.y)
-                let length = max(0.001, hypot(dx,dy)), nx = -dy/length*8, ny = dx/length*8
+                let p = cubicPoint(root, c1, c2, tip, t)
+                let tangent = cubicTangent(root, c1, c2, tip, t)
+                let length = max(0.001, hypot(tangent.x, tangent.y))
+                let span = (8 + 3 * puff) / length
+                let nx = -tangent.y * span, ny = tangent.x * span
                 ctx.move(to: CGPoint(x:p.x+nx,y:p.y+ny)); ctx.addLine(to: CGPoint(x:p.x-nx,y:p.y-ny)); ctx.strokePath()
             }
             ctx.restoreGState()
@@ -644,11 +689,11 @@ enum CatRenderer {
         ctx.restoreGState()
     }
 
-    private static func drawAngerMark(in ctx: CGContext, head: CGPoint, progress: CGFloat) {
+    private static func drawAngerMark(in ctx: CGContext, head: CGPoint, progress: CGFloat, side: CGFloat = 1) {
         guard progress < 1 else { return }
         let appear = CatPhysics.ease(progress / 0.18)
         let fade = 1 - CatPhysics.ease((progress - 0.65) / 0.35)
-        let size = 0.65 + 0.43 * appear + 0.12 * sin(.pi * appear)
+        let size = (0.65 + 0.43 * appear + 0.12 * sin(.pi * appear)) * (side < 0 ? 0.76 : 1)
         let mark = CGMutablePath()
         for x: CGFloat in [-1, 1] {
             for y: CGFloat in [-1, 1] {
@@ -657,8 +702,8 @@ enum CatRenderer {
             }
         }
         ctx.saveGState()
-        ctx.translateBy(x: head.x + 44 + progress * 4, y: head.y - 49 - progress * 13)
-        ctx.rotate(by: (14 - progress * 10) * .pi / 180)
+        ctx.translateBy(x: head.x + side * (44 + progress * 4), y: head.y - 49 - progress * 13)
+        ctx.rotate(by: side * (14 - progress * 10) * .pi / 180)
         ctx.scaleBy(x: size, y: size)
         ctx.setLineCap(.round)
         ctx.setStrokeColor(rgb(0xFFF1E5, 0.87 * appear * fade).cgColor)
@@ -668,7 +713,28 @@ enum CatRenderer {
         ctx.restoreGState()
     }
 
-    // MARK: - Unified C1-Continuous Cat Silhouette (Crown -> Cheeks -> Plush Neck -> Pear Hips)
+    // MARK: - Cat Silhouette
+
+    private static func addFurStrokes(to strokes: CGMutablePath, from start: CGPoint,
+                                      control1: CGPoint, control2: CGPoint, end: CGPoint,
+                                      reach: CGFloat, count: Int, physics: CatPhysics) {
+        let lengths: [CGFloat] = [0.83, 1, 0.70, 0.93, 0.77]
+        let spacing = 1 / CGFloat(count)
+        for i in 0..<count {
+            let t = (CGFloat(i) + (i % 3 == 1 ? 0.56 : 0.45)) * spacing
+            let base = cubicPoint(start, control1, control2, end, t)
+            let tangent = cubicTangent(start, control1, control2, end, t)
+            let length = hypot(tangent.x, tangent.y)
+            let nx = tangent.y / length, ny = -tangent.x / length
+            let height = min(1, max(0, (CatPhysics.seatAnchor.y + 12 - base.y) / 145))
+            let pulse = furRipple(physics.furPulseAge, delay: height * 0.09)
+            let lift = reach * lengths[i % lengths.count] * (1 + 0.40 * pulse)
+            let lean = (i % 2 == 0 ? 0.14 : -0.08) * lift / length
+            strokes.move(to: CGPoint(x: base.x - 3 * nx, y: base.y - 3 * ny))
+            strokes.addLine(to: CGPoint(x: base.x + lift * nx + lean * tangent.x,
+                                       y: base.y + lift * ny + lean * tangent.y))
+        }
+    }
 
     private static func drawUnifiedSilhouette(
         in ctx: CGContext,
@@ -683,6 +749,7 @@ enum CatRenderer {
         let pitch = physics.headPitch.value
         let hTilt = physics.headTilt.value
         let bTilt = physics.bodyTilt.value
+        let puff = physics.furPuff
 
         let cH = cos(hTilt), sH = sin(hTilt)
         func H(_ lx: CGFloat, _ ly: CGFloat) -> CGPoint {
@@ -695,6 +762,7 @@ enum CatRenderer {
         let cB = cos(bTilt), sB = sin(bTilt)
         let sy = physics.bodySquash.value
         let turn = physics.turn
+        let back = CatPhysics.ease((turn - 0.43) / 0.37)
         let profile = sin(turn * .pi)
         let sx = (1.0 + (1.0 - sy) * 0.55) * (1 - profile * 0.13)
         func B(_ lx: CGFloat, _ ly: CGFloat) -> CGPoint {
@@ -711,35 +779,70 @@ enum CatRenderer {
         let leftCheekX: CGFloat = -42.5 + cheekShift * 0.4 + profile * 6
         let rightCheekX: CGFloat = 42.5 + cheekShift * 0.4 - profile * 10
 
-        // ONE single tangent-continuous closed cubic Bezier path — mathematically impossible to form any ledge or protrusion!
-        let crown  = H(cheekShift * 0.2, -30 + crownDrop)
-        let rCheek = H(rightCheekX, 5)
-        let rHip   = B(49.0 + profile * 3, -14)
-        let rBot   = B(24.0, 12)
-        let lBot   = B(-24.0, 12)
-        let lHip   = B(-49.0, -14 - profile * 3)
-        let lCheek = H(leftCheekX, 5)
+        let fullness = back * (0.44 + 0.56 * CatPhysics.ease(puff))
+        let hipSpread = 10 * fullness + 4 * puff * furRipple(physics.furPulseAge, delay: 0)
+        let crownY = -30 + crownDrop - 6 * fullness
+        let hipY = -14 - 8 * fullness
+        let seatWidth = 24 + 5 * fullness
+
+        let crown  = H(cheekShift * 0.2, crownY)
+        let rCheek = H(rightCheekX + 5 * fullness, 5)
+        let rHip   = B(49 + profile * 3 + hipSpread, hipY)
+        let rBot   = B(seatWidth, 12)
+        let lBot   = B(-seatWidth, 12)
+        let lHip   = B(-49 - hipSpread, hipY - profile * 3)
+        let lCheek = H(leftCheekX - 5 * fullness, 5)
 
         let path = CGMutablePath()
+        let furStrokes = CGMutablePath()
+        func bodyCurve(_ start: CGPoint, _ c1: CGPoint, _ c2: CGPoint, _ end: CGPoint,
+                       _ tuftReach: CGFloat, _ tuftCount: Int) {
+            path.addCurve(to: end, control1: c1, control2: c2)
+            if puff > 0 {
+                addFurStrokes(to: furStrokes, from: start, control1: c1, control2: c2, end: end,
+                              reach: tuftReach * puff, count: tuftCount, physics: physics)
+            }
+        }
+        let crownSpan = 26 + 6 * fullness
+        let cheekControl = 1.5 + 1.5 * fullness
+        let shoulderControl = -2.5 + 9 * fullness
+        let flankControl = 51.5 + 6 * fullness
+        let rumpControl = 47 + 14 * fullness
+        let bottomControl = 36 + 14 * fullness
         path.move(to: crown)
-        path.addCurve(to: rCheek, control1: H(26 + cheekShift * 0.3, -30 + crownDrop), control2: H(rightCheekX + 1.5, -14))
-        path.addCurve(to: rHip,   control1: H(rightCheekX - 2.5, 24), control2: B(51.5, -48 + breath * 0.5))
-        path.addCurve(to: rBot,   control1: B(47.0, 5), control2: B(36.0, 12))
-        path.addLine(to: lBot)
-        path.addCurve(to: lHip,   control1: B(-36.0, 12), control2: B(-47.0, 5))
-        path.addCurve(to: lCheek, control1: B(-51.5, -48 + breath * 0.5), control2: H(leftCheekX + 2.5, 24))
-        path.addCurve(to: crown,  control1: H(leftCheekX - 1.5, -14), control2: H(-26 + cheekShift * 0.3, -30 + crownDrop))
+        bodyCurve(crown, H(crownSpan + cheekShift * 0.3, crownY), H(rightCheekX + cheekControl, -14 - 6 * fullness),
+                  rCheek, 4.6, 6)
+        bodyCurve(rCheek, H(rightCheekX + shoulderControl, 24), B(flankControl, -48 + breath * 0.5),
+                  rHip, 5.5, 8)
+        bodyCurve(rHip, B(rumpControl, 5 - 5 * fullness), B(bottomControl, 12), rBot, 4.1, 6)
+        bodyCurve(rBot, B(9, 12), B(-9, 12), lBot, 1.4, 6)
+        bodyCurve(lBot, B(-bottomControl, 12), B(-rumpControl, 5 - 5 * fullness), lHip, 4.1, 6)
+        bodyCurve(lHip, B(-flankControl, -48 + breath * 0.5), H(leftCheekX - shoulderControl, 24),
+                  lCheek, 5.5, 8)
+        bodyCurve(lCheek, H(leftCheekX - cheekControl, -14 - 6 * fullness), H(-crownSpan + cheekShift * 0.3, crownY),
+                  crown, 4.6, 6)
         path.closeSubpath()
 
-        let back = CatPhysics.ease((turn - 0.43) / 0.37)
         ctx.saveGState()
         if back > 0 {
-            ctx.addPath(path); ctx.clip()
             let fur = coat == .siamese ? (siameseCream.blended(withFraction: back, of: siameseLatte) ?? siameseLatte) : bodyColor(coat)
             let shoulder = fur.blended(withFraction: 0.14, of: rgb(0xA7A2A0)) ?? fur
             let colors = [shoulder.cgColor, fur.cgColor] as CFArray
             if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1]) {
-                ctx.drawLinearGradient(gradient, start: crown, end: B(0, 12), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                func shadeBack() {
+                    ctx.drawLinearGradient(gradient, start: crown, end: B(0, 18),
+                                           options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                }
+                if puff > 0 {
+                    ctx.saveGState()
+                    ctx.addPath(furStrokes.copy(strokingWithWidth: 4.5 * puff, lineCap: .round,
+                                               lineJoin: .round, miterLimit: 10))
+                    ctx.clip()
+                    shadeBack()
+                    ctx.restoreGState()
+                }
+                ctx.addPath(path); ctx.clip()
+                shadeBack()
             }
             if coat == .shorthair {
                 ctx.setStrokeColor(rgb(0x62605F, 0.56 * back).cgColor)

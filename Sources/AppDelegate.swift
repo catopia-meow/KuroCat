@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var overlayWindow: OverlayWindow!
     private var renderTimer: Timer?
     private var lastFrameTime: CFTimeInterval = CACurrentMediaTime()
+    private var observedKeyActivity: CFTimeInterval = 0
+    private var observedMouseActivity: CFTimeInterval = 0
     private var isPetVisible = true
     private let audio = SystemAudio()
     private let deskDetection = DeskDetection()
@@ -60,16 +62,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 let physics = self.overlayWindow.catView.physics
-                physics.resumeFromInput(InputEngine.shared.lastKeyActivityTime)
+                self.observedKeyActivity = InputEngine.shared.lastKeyActivityTime
+                physics.resumeFromInput(self.observedKeyActivity)
                 physics.triggerKeyDown(key)
             }
         }
         engine.onMouseClick = { [weak self] button, isDown in
             DispatchQueue.main.async {
                 guard let self else { return }
-                let physics = self.overlayWindow.catView.physics
-                if isDown { physics.resumeFromInput(InputEngine.shared.lastMouseClickTime) }
-                physics.triggerMouseClick(button: button, isDown: isDown)
+                let view = self.overlayWindow.catView
+                self.observedMouseActivity = InputEngine.shared.lastMouseMoveTime
+                if isDown && !view.pointerOnPet {
+                    view.physics.resumeFromInput(InputEngine.shared.lastMouseClickTime)
+                }
+                view.physics.triggerMouseClick(button: button, isDown: isDown)
             }
         }
         engine.start()
@@ -166,6 +172,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             view.physics.step(dt: dt, windowFrameInScreen: self.overlayWindow.frame)
             view.updateHoverAndClickThrough()
+            if engine.lastKeyActivityTime > self.observedKeyActivity {
+                self.observedKeyActivity = engine.lastKeyActivityTime
+                physics.resumeFromInput(self.observedKeyActivity)
+            }
+            if engine.lastMouseMoveTime > self.observedMouseActivity {
+                self.observedMouseActivity = engine.lastMouseMoveTime
+                if self.overlayWindow.ignoresMouseEvents {
+                    physics.resumeFromInput(self.observedMouseActivity)
+                }
+            }
             view.needsDisplay = true
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -246,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Features
         let rest: PetAction = physics.sleeping ? .wake : .sleep
-        let actions: [PetAction] = [.treat, rest, .music, .mode, .hide]
+        let actions: [PetAction] = [.treat, rest, .doubleClickWake, .music, .mode, .hide]
         for action in actions {
             let title: String
             switch action {
@@ -259,6 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.target = self
             item.representedObject = action.rawValue
             item.isEnabled = physics.canPerform(action)
+            if action == .doubleClickWake { item.state = settings.doubleClickWake ? .on : .off }
             menu.addItem(item)
         }
         menu.addItem(.separator())
@@ -278,7 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         legendsItem.state = settings.showKeyLegends ? .on : .off
         menu.addItem(legendsItem)
 
-        let footItem = NSMenuItem(title: "3键同时按「用脚按」彩蛋 🐾", action: #selector(toggleFootEgg), keyEquivalent: "")
+        let footItem = NSMenuItem(title: "高速打字彩蛋（左脚和尾巴）", action: #selector(toggleFootEgg), keyEquivalent: "")
         footItem.target = self
         footItem.state = settings.footEasterEgg ? .on : .off
         menu.addItem(footItem)
@@ -391,11 +408,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if physics.listening { stopMusic() } else { _ = startMusic(manual: true) }
             return
         }
-        if physics.listening { stopMusic() }
+        if physics.listening && action != .doubleClickWake { stopMusic() }
         switch action {
         case .treat: physics.offerTreat()
         case .sleep: physics.sleep()
         case .wake: physics.wake()
+        case .doubleClickWake:
+            CatSettings.shared.doubleClickWake.toggle()
+            observedKeyActivity = InputEngine.shared.lastKeyActivityTime
+            observedMouseActivity = InputEngine.shared.lastMouseMoveTime
         case .mode:
             CatSettings.shared.deskMode = CatSettings.shared.deskMode.next
             updateDeskMode()

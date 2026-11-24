@@ -2,6 +2,16 @@ import Foundation
 import AppKit
 
 final class CatCanvasView: NSView {
+    private enum ClickTarget: Equatable {
+        case bowl, restingHead, restingBody, sulkingCat
+    }
+
+    private struct Press {
+        let screenPoint: CGPoint
+        let windowOrigin: CGPoint
+        let target: ClickTarget?
+    }
+
     let physics = CatPhysics()
     var onRequestPermission: (() -> Void)?
     var onRightClickMenu: ((NSEvent) -> Void)?
@@ -12,9 +22,9 @@ final class CatCanvasView: NSView {
     private var lastHoverCanvasPt: CGPoint?
     private var hover: PetAction?
     private var held: PetAction?
+    private var press: Press?
+    private var previousClick: ClickTarget?
     private var isDragging = false
-    private var dragStartScreenPt: CGPoint = .zero
-    private var dragStartWindowOrigin: CGPoint = .zero
     private var isShowingOpenHand = false
 
     override var isFlipped: Bool { true }
@@ -39,6 +49,7 @@ final class CatCanvasView: NSView {
         let settings = CatSettings.shared
         if settings.showControls {
             CatRenderer.drawControls(in: ctx, physics: physics, mode: settings.deskMode,
+                                     doubleClickWake: settings.doubleClickWake,
                                      keyBubbles: settings.showKeyBadges, mouseBubbles: settings.showMouseBadges,
                                      hover: hover, held: held)
         }
@@ -56,13 +67,23 @@ final class CatCanvasView: NSView {
         return CGPoint(x: localX, y: localY)
     }
 
+    var pointerOnPet: Bool {
+        if press != nil || held != nil { return true }
+        guard window?.isVisible == true, let pt = canvasPoint(fromScreenPoint: NSEvent.mouseLocation) else { return false }
+        let settings = CatSettings.shared
+        let showPill = InputEngine.shared.status == .needsPermission
+        let zone = CatRenderer.hitTest(point: pt, physics: physics, showPermissionPill: showPill, showControls: settings.showControls)
+        if settings.fullClickThrough && !NSEvent.modifierFlags.contains(.option) { return zone == .permissionPill }
+        return zone != .none
+    }
+
     /// Called on every 60fps tick to handle smart click-through AND petting strokes.
     func updateHoverAndClickThrough() {
         guard let win = window else { return }
         let screenPt = NSEvent.mouseLocation
         let showPill = InputEngine.shared.status == .needsPermission
 
-        if isDragging || held != nil {
+        if press != nil || held != nil {
             physics.setBellyHovered(false)
             physics.overControl = held != nil
             win.ignoresMouseEvents = false
@@ -150,52 +171,58 @@ final class CatCanvasView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard let win = window else { return }
-        let screenPt = NSEvent.mouseLocation
+        let optionHeld = event.modifierFlags.contains(.option)
+        let settings = CatSettings.shared
+        let screenPt = win.convertPoint(toScreen: event.locationInWindow)
         let showPill = InputEngine.shared.status == .needsPermission
-
-        if let pt = canvasPoint(fromScreenPoint: screenPt) {
-            let zone = CatRenderer.hitTest(point: pt, physics: physics, showPermissionPill: showPill,
-                                           showControls: CatSettings.shared.showControls)
-            if zone == .permissionPill {
-                onRequestPermission?()
-                return
-            }
-            if case let .control(action) = zone {
-                held = action
-                return
-            }
-            if zone == .bowl {
-                if event.clickCount >= 2 { onBowlTaken?() }
-                physics.clickBowl(take: event.clickCount >= 2)
-                return
-            }
-            if case let .tabletKey(slot) = zone, !event.modifierFlags.contains(.option) {
-                physics.triggerKeyDown(physics.tabletKeys[slot])
-                return
-            }
-            if (physics.sleeping || physics.listening) && !event.modifierFlags.contains(.option) {
-                if !physics.ignoring && event.clickCount >= 2 && (zone == .head || zone == .leftEar || zone == .rightEar) {
-                    onWake?()
-                }
-                return
-            }
-            if physics.ignoring && !event.modifierFlags.contains(.option) { return }
+        guard let pt = canvasPoint(fromScreenPoint: screenPt) else { return }
+        let zone = CatRenderer.hitTest(point: pt, physics: physics, showPermissionPill: showPill,
+                                       showControls: settings.showControls)
+        if zone == .permissionPill {
+            previousClick = nil
+            onRequestPermission?()
+            return
+        }
+        guard !settings.fullClickThrough || optionHeld, zone != .none else { return }
+        if case let .control(action) = zone {
+            previousClick = nil
+            held = action
+            return
+        }
+        if case let .tabletKey(slot) = zone, !optionHeld {
+            previousClick = nil
+            physics.triggerKeyDown(physics.tabletKeys[slot])
+            return
         }
 
-        isDragging = true
-        dragStartScreenPt = screenPt
-        dragStartWindowOrigin = win.frame.origin
-        NSCursor.closedHand.set()
+        let target: ClickTarget?
+        let catHead = zone == .head || zone == .leftEar || zone == .rightEar
+        let catBody = zone == .body || zone == .belly
+        if !optionHeld && zone == .bowl {
+            target = .bowl
+        } else if !optionHeld && physics.facingAway && (catHead || catBody) {
+            target = .sulkingCat
+        } else if !optionHeld && physics.atRest && catHead {
+            target = .restingHead
+        } else if !optionHeld && physics.atRest && catBody {
+            target = .restingBody
+        } else {
+            target = nil
+        }
+        press = Press(screenPoint: screenPt, windowOrigin: win.frame.origin, target: target)
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard isDragging, let win = window else { return }
+        guard let press, let win = window else { return }
         let currentScreenPt = NSEvent.mouseLocation
-        let newOrigin = CGPoint(
-            x: dragStartWindowOrigin.x + (currentScreenPt.x - dragStartScreenPt.x),
-            y: dragStartWindowOrigin.y + (currentScreenPt.y - dragStartScreenPt.y)
-        )
-        win.setFrameOrigin(newOrigin)
+        let dx = currentScreenPt.x - press.screenPoint.x
+        let dy = currentScreenPt.y - press.screenPoint.y
+        if !isDragging {
+            guard hypot(dx, dy) >= 4 else { return }
+            isDragging = true
+            NSCursor.closedHand.set()
+        }
+        win.setFrameOrigin(CGPoint(x: press.windowOrigin.x + dx, y: press.windowOrigin.y + dy))
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -206,16 +233,37 @@ final class CatCanvasView: NSView {
             }
             return
         }
-        guard isDragging, let win = window else { return }
-        isDragging = false
-        NSCursor.openHand.set()
-        // Save position
-        UserDefaults.standard.set(Double(win.frame.origin.x), forKey: "KuroCat.PosX")
-        let baseY = win.frame.maxY - CatPhysics.canvasSize.height * CatSettings.shared.scale
-        UserDefaults.standard.set(Double(baseY), forKey: "KuroCat.PosY")
+        guard let press, let win = window else { return }
+        self.press = nil
+        if isDragging {
+            isDragging = false
+            previousClick = nil
+            NSCursor.openHand.set()
+            isShowingOpenHand = true
+            UserDefaults.standard.set(Double(win.frame.origin.x), forKey: "KuroCat.PosX")
+            let baseY = win.frame.maxY - CatPhysics.canvasSize.height * CatSettings.shared.scale
+            UserDefaults.standard.set(Double(baseY), forKey: "KuroCat.PosY")
+            return
+        }
+        let doubleClick = event.clickCount >= 2 && previousClick == press.target
+        previousClick = doubleClick ? nil : press.target
+        switch press.target {
+        case .bowl? where physics.bowlVisible && !physics.ignoring:
+            if doubleClick { onBowlTaken?() }
+            physics.clickBowl(take: doubleClick)
+        case .sulkingCat? where physics.facingAway:
+            physics.pokeBack()
+        case .restingHead? where physics.atRest:
+            if doubleClick && CatSettings.shared.doubleClickWake { onWake?() }
+            else { physics.bounceAtRest() }
+        case .restingBody? where physics.atRest:
+            physics.bounceAtRest()
+        default: break
+        }
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        previousClick = nil
         onRightClickMenu?(event)
     }
 }

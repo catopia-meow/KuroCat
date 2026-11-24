@@ -89,10 +89,11 @@ enum MenuCmd : UINT {
     CMD_TOGGLE_SLEEP,
     CMD_TREAT,
     CMD_TOGGLE_CONTROLS,
-    CMD_MUSIC
+    CMD_MUSIC,
+    CMD_TOGGLE_DOUBLE_CLICK_WAKE
 };
 
-enum class ClickTarget { None, RestingHead, Bowl };
+enum class ClickTarget { None, RestingHead, RestingBody, SulkingCat, Bowl };
 
 struct AppState {
     HWND hwnd = nullptr;
@@ -106,7 +107,9 @@ struct AppState {
     AudioBeat audioBeat;
 
     bool isVisible = true;
+    bool petPressed = false;
     bool isDragging = false;
+    ClickTarget pressedTarget = ClickTarget::None;
     PetControl heldControl = PetControl::None;
     PetControl hoveredControl = PetControl::None;
     double controlHoverSince = 0.0;
@@ -115,6 +118,8 @@ struct AppState {
     ClickTarget previousClick = ClickTarget::None;
     POINT previousClickPoint = {};
     DWORD previousClickTime = 0;
+    double observedKeyActivity = 0.0;
+    double observedMouseActivity = 0.0;
     bool hasLastHover = false;
     Pt lastHoverCanvas = {};
 
@@ -466,9 +471,11 @@ void recoverAfterSystemEvent(AppState& app) {
     app.input.resetAllState();
     app.input.registerRawInput(app.hwnd);
     app.input.lastMouseMoveTime = now; // wake the cat up so it visibly greets the user again
+    app.observedMouseActivity = now;
     app.destroyBuffer();
     app.ulwFailures = 0;
-    app.isDragging = false;
+    if (GetCapture() == app.hwnd) ReleaseCapture();
+    app.petPressed = app.isDragging = false;
     app.lastTickTime = now;
     app.nextFrameTime = 0.0;
     app.lastRenderTime = now;
@@ -564,16 +571,27 @@ bool mouseIsUnlocked(const AppState& app) {
     return !app.settings.fullClickThrough || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
 }
 
-bool isDoubleClick(AppState& app, ClickTarget target, POINT point, UINT message) {
+CatHitZone petZoneAt(Pt point, const AppState& app) {
+    if (app.physics.resting() && point.y >= 230.0f) return CatHitZone::None;
+    if (app.settings.tabletMode && point.y >= 230.0f && point.y <= 296.0f &&
+        point.x >= CatPhysics::keypadLeft && point.x <= 325.0f) return CatHitZone::None;
+    return CatRenderer::hitTest(point, app.physics);
+}
+
+bool pointerOnPet(const AppState& app, Pt point) {
+    return app.petPressed || app.heldControl != PetControl::None || controlAt(point, app.settings) != PetControl::None ||
+           CatRenderer::bowlAt(point, app.physics) || petZoneAt(point, app) != CatHitZone::None;
+}
+
+bool isDoubleClick(AppState& app, ClickTarget target, POINT point) {
     DWORD now = static_cast<DWORD>(GetMessageTime());
     bool sameTarget = app.previousClick == target && now - app.previousClickTime <= GetDoubleClickTime() &&
         std::abs(point.x - app.previousClickPoint.x) <= GetSystemMetrics(SM_CXDOUBLECLK) / 2 &&
         std::abs(point.y - app.previousClickPoint.y) <= GetSystemMetrics(SM_CYDOUBLECLK) / 2;
-    bool doubleClick = message == WM_LBUTTONDBLCLK || sameTarget;
-    app.previousClick = doubleClick ? ClickTarget::None : target;
+    app.previousClick = sameTarget ? ClickTarget::None : target;
     app.previousClickPoint = point;
     app.previousClickTime = now;
-    return doubleClick;
+    return sameTarget;
 }
 
 void runCommand(AppState& app, UINT cmd);
@@ -600,6 +618,7 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_STRING, CMD_TOGGLE_VISIBLE, app.isVisible ? L"\u9690\u85CF\u5C0F\u732B" : L"\u663E\u793A\u5C0F\u732B");
     UINT actionFlags = app.physics.ignoring() ? MF_GRAYED : 0;
     AppendMenuW(menu, MF_STRING | actionFlags, CMD_TOGGLE_SLEEP, app.physics.resting() ? L"晚上猫熬人" : L"白天不熬猫");
+    AppendMenuW(menu, MF_STRING | (app.settings.doubleClickWake ? MF_CHECKED : 0), CMD_TOGGLE_DOUBLE_CLICK_WAKE, L"双击猫头唤醒");
     AppendMenuW(menu, MF_STRING | actionFlags | (app.physics.feeding() ? MF_GRAYED : 0), CMD_TREAT, L"喂零食");
     UINT musicFlags = actionFlags | (app.physics.listening() ? MF_CHECKED : 0) | (app.physics.resting() ? MF_GRAYED : 0);
     AppendMenuW(menu, MF_STRING | musicFlags, CMD_MUSIC, L"听音乐");
@@ -618,7 +637,7 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_STRING | (app.settings.showKeyBadges ? MF_CHECKED : 0), CMD_TOGGLE_BADGES, L"\u663E\u793A\u6309\u952E\u6C14\u6CE1 ([S] [W] [\u21E7])");
     AppendMenuW(menu, MF_STRING | (app.settings.showMouseBadges ? MF_CHECKED : 0), CMD_TOGGLE_MOUSE_BADGES, L"\u663E\u793A\u9F20\u6807\u70B9\u51FB\u6C14\u6CE1 ([\u5DE6\u952E] [\u53F3\u952E])");
     AppendMenuW(menu, MF_STRING | (app.settings.showKeyLegends ? MF_CHECKED : 0), CMD_TOGGLE_KEY_LEGENDS, L"\u663E\u793A\u952E\u76D8\u5B57\u7B26");
-    AppendMenuW(menu, MF_STRING | (app.settings.footEasterEgg ? MF_CHECKED : 0), CMD_TOGGLE_FOOT, L"3\u952E\u540C\u65F6\u6309\u300C\u7528\u811A\u6309\u300D\u5F69\u86CB");
+    AppendMenuW(menu, MF_STRING | (app.settings.footEasterEgg ? MF_CHECKED : 0), CMD_TOGGLE_FOOT, L"高速打字彩蛋（左脚和尾巴）");
     AppendMenuW(menu, MF_STRING | (app.settings.petInteraction ? MF_CHECKED : 0), CMD_TOGGLE_PET, L"\u6478\u5934/\u6478\u80CC\u95ED\u773C\u4E92\u52A8");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
@@ -694,8 +713,8 @@ bool startListening(AppState& app) {
     return true;
 }
 
-void resumeFromIdleInput(AppState& app) {
-    if (!app.physics.canResumeFromInput(app.input.lastActivity())) return;
+void resumeFromInput(AppState& app, double activity) {
+    if (app.settings.doubleClickWake || !app.physics.canResumeFromInput(activity)) return;
     if (app.physics.listening()) stopListening(app);
     app.physics.wakeUp();
 }
@@ -748,6 +767,13 @@ void runCommand(AppState& app, UINT cmd) {
         case CMD_TOGGLE_SLEEP:
             if (app.physics.resting()) app.physics.wakeUp();
             else app.physics.goToSleep();
+            break;
+        case CMD_TOGGLE_DOUBLE_CLICK_WAKE:
+            app.settings.doubleClickWake = !app.settings.doubleClickWake;
+            app.previousClick = ClickTarget::None;
+            app.observedKeyActivity = app.input.lastKeyActivityTime;
+            app.observedMouseActivity = app.input.lastMouseMoveTime;
+            app.settings.saveToRegistry();
             break;
         case CMD_TREAT:
             app.mealPending = false;
@@ -893,6 +919,7 @@ void runControl(AppState& app, PetControl button) {
         case PetControl::Treat: runCommand(app, CMD_TREAT); break;
         case PetControl::Sleep:
         case PetControl::Wake: runCommand(app, CMD_TOGGLE_SLEEP); break;
+        case PetControl::DoubleClickWake: runCommand(app, CMD_TOGGLE_DOUBLE_CLICK_WAKE); break;
         case PetControl::Music: runCommand(app, CMD_MUSIC); break;
         case PetControl::Mode:
             switch (app.settings.deskMode()) {
@@ -954,27 +981,24 @@ void tickAndRender(AppState& app) {
     GetCursorPos(&cursor);
     Pt cp = canvasPoint({cursor.x - wr.left, cursor.y - wr.top}, wr, app.settings);
     bool unlocked = mouseIsUnlocked(app);
-    PetControl hover = unlocked && !app.isDragging ? controlAt(cp, app.settings) : PetControl::None;
+    PetControl hover = unlocked && !app.petPressed ? controlAt(cp, app.settings) : PetControl::None;
     if (hover != app.hoveredControl || app.heldControl != PetControl::None) {
         app.hoveredControl = hover;
         app.controlHoverSince = now;
     }
 
     bool overControl = hover != PetControl::None || app.heldControl != PetControl::None;
-    resumeFromIdleInput(app);
     if (!app.physics.ignoring() && !app.physics.feeding() &&
         mealReady(app.mealPending, app.mealWaitsForIdle, app.input, now)) {
         app.mealPending = false;
         app.physics.offerTreat();
     }
-    const auto rest = app.physics.breakDue(dt, app.input, now, overControl);
-    if (rest != CatPhysics::Break::None) {
+    if (app.physics.breakDue(dt, app.input, now, overControl)) {
         SYSTEMTIME local{};
         GetLocalTime(&local);
         static std::mt19937 random{std::random_device{}()};
         bool preferred = std::bernoulli_distribution(0.7)(random);
         if (!breakIsMusic(local.wHour, preferred) || !startListening(app)) app.physics.goToSleep();
-        if (rest == CatPhysics::Break::Idle) app.physics.beginIdleRest(now);
     }
 
     int detected = app.deskMonitor->result.load();
@@ -1002,13 +1026,11 @@ void tickAndRender(AppState& app) {
 
     // Smart Click-Through + Petting Detection
     bool bellyHovered = false;
-    if (!app.isDragging && app.heldControl == PetControl::None) {
+    bool cursorCaptured = app.petPressed || app.heldControl != PetControl::None;
+    if (!cursorCaptured) {
         if (PtInRect(&wr, cursor)) {
-            CatHitZone zone = CatRenderer::hitTest(cp, app.physics);
+            CatHitZone zone = petZoneAt(cp, app);
             bool overBowl = CatRenderer::bowlAt(cp, app.physics);
-            if (app.physics.resting() && cp.y >= 230.0f) zone = CatHitZone::None;
-            if (app.settings.tabletMode && cp.y >= 230.f && cp.y <= 296.f && cp.x >= CatPhysics::keypadLeft && cp.x <= 325.f)
-                zone = CatHitZone::None; // Let the underlying drawing app receive pen strokes.
             bellyHovered = app.settings.petInteraction && zone == CatHitZone::Belly;
             if (zone == CatHitZone::Desk) app.physics.stopPetting();
             if (zone != CatHitZone::None) {
@@ -1027,6 +1049,7 @@ void tickAndRender(AppState& app) {
             }
             bool overKey = app.settings.tabletMode && app.physics.usingDesk() && CatPhysics::tabletKeyAt(cp) >= 0;
             bool clickThrough = !unlocked || (zone == CatHitZone::None && !overBowl && !overKey && hover == PetControl::None);
+            cursorCaptured = !clickThrough;
             setClickThrough(app.hwnd, clickThrough);
         } else {
             app.hasLastHover = false;
@@ -1034,6 +1057,14 @@ void tickAndRender(AppState& app) {
         }
     }
     app.physics.setBellyHovered(bellyHovered);
+    if (app.input.lastKeyActivityTime > app.observedKeyActivity) {
+        app.observedKeyActivity = app.input.lastKeyActivityTime;
+        resumeFromInput(app, app.observedKeyActivity);
+    }
+    if (app.input.lastMouseMoveTime > app.observedMouseActivity) {
+        app.observedMouseActivity = app.input.lastMouseMoveTime;
+        if (!cursorCaptured) resumeFromInput(app, app.observedMouseActivity);
+    }
 
     // Render 32-bit Premultiplied ARGB frame directly into DIB and present via UpdateLayeredWindow
     app.ensureBuffer(w, h);
@@ -1149,40 +1180,32 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     SetCapture(hwnd);
                     return 0;
                 }
-                if (!altHeld && CatRenderer::bowlAt(point, app->physics)) {
-                    if (isDoubleClick(*app, ClickTarget::Bowl, local, msg)) {
-                        if (app->physics.listening()) stopListening(*app);
-                        app->physics.takeBowl();
-                        app->demoActive = false;
-                    } else {
-                        app->physics.disturbBowl();
-                    }
-                    return 0;
-                }
-                if ((app->physics.resting() || app->physics.listening()) && !altHeld) {
-                    if (!app->physics.ignoring()) {
-                        CatHitZone zone = CatRenderer::hitTest(point, app->physics);
-                        if (zone == CatHitZone::Head || zone == CatHitZone::LeftEar || zone == CatHitZone::RightEar) {
-                            if (isDoubleClick(*app, ClickTarget::RestingHead, local, msg)) {
-                                if (app->physics.listening()) stopListening(*app);
-                                app->physics.wakeUp();
-                            }
-                            return 0;
-                        }
-                    }
-                    app->previousClick = ClickTarget::None;
-                    return 0;
-                }
-                app->previousClick = ClickTarget::None;
-                if (app->settings.tabletMode && app->physics.usingDesk() && !altHeld) {
+                const bool overBowl = CatRenderer::bowlAt(point, app->physics);
+                if (!overBowl && app->settings.tabletMode && app->physics.usingDesk() && !altHeld) {
                     int slot = CatPhysics::tabletKeyAt(point);
                     if (slot >= 0) {
+                        app->previousClick = ClickTarget::None;
                         app->physics.triggerKeyDown(app->physics.tabletKeys[slot].key, app->settings);
                         return 0;
                     }
                 }
-                app->isDragging = true;
-                GetCursorPos(&app->dragStartCursor);
+                CatHitZone zone = CatRenderer::hitTest(point, app->physics);
+                if (zone == CatHitZone::None && !overBowl) return 0;
+                app->pressedTarget = ClickTarget::None;
+                if (!altHeld && overBowl) {
+                    app->pressedTarget = ClickTarget::Bowl;
+                } else if (!altHeld && app->physics.facingAway() && zone != CatHitZone::Desk) {
+                    app->pressedTarget = ClickTarget::SulkingCat;
+                } else if (!altHeld && app->physics.atRest()) {
+                    if (zone == CatHitZone::Head || zone == CatHitZone::LeftEar || zone == CatHitZone::RightEar) {
+                        app->pressedTarget = ClickTarget::RestingHead;
+                    } else if (zone == CatHitZone::Body || zone == CatHitZone::Belly) {
+                        app->pressedTarget = ClickTarget::RestingBody;
+                    }
+                }
+                app->petPressed = true;
+                app->dragStartCursor = local;
+                ClientToScreen(hwnd, &app->dragStartCursor);
                 RECT wr = {};
                 GetWindowRect(hwnd, &wr);
                 app->dragStartWinOrigin = { wr.left, wr.top };
@@ -1192,11 +1215,16 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_MOUSEMOVE:
-            if (app && app->isDragging) {
+            if (app && app->petPressed) {
                 POINT cur = {};
                 GetCursorPos(&cur);
-                int nx = app->dragStartWinOrigin.x + (cur.x - app->dragStartCursor.x);
-                int ny = app->dragStartWinOrigin.y + (cur.y - app->dragStartCursor.y);
+                int dx = cur.x - app->dragStartCursor.x;
+                int dy = cur.y - app->dragStartCursor.y;
+                if (!app->isDragging && std::abs(dx) < GetSystemMetrics(SM_CXDRAG) &&
+                    std::abs(dy) < GetSystemMetrics(SM_CYDRAG)) return 0;
+                app->isDragging = true;
+                int nx = app->dragStartWinOrigin.x + dx;
+                int ny = app->dragStartWinOrigin.y + dy;
                 SetWindowPos(hwnd, nullptr, nx, ny, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
             }
             return 0;
@@ -1212,19 +1240,52 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (mouseIsUnlocked(*app) && controlAt(point, app->settings) == button) runControl(*app, button);
                 return 0;
             }
-            if (app && app->isDragging) {
-                app->isDragging = false;
+            if (app && app->petPressed) {
+                bool moved = app->isDragging;
+                ClickTarget target = app->pressedTarget;
+                app->petPressed = app->isDragging = false;
                 ReleaseCapture();
-                RECT wr = {};
-                GetWindowRect(hwnd, &wr);
-                app->settings.posX = wr.left;
-                app->settings.posY = wr.top;
-                app->settings.saveToRegistry();
+                POINT local{short(LOWORD(lParam)), short(HIWORD(lParam))};
+                if (moved) {
+                    app->previousClick = ClickTarget::None;
+                    RECT wr = {};
+                    GetWindowRect(hwnd, &wr);
+                    app->settings.posX = wr.left;
+                    app->settings.posY = wr.top;
+                    app->settings.saveToRegistry();
+                } else if (target == ClickTarget::Bowl && app->physics.bowlVisible() && !app->physics.ignoring()) {
+                    if (isDoubleClick(*app, target, local)) {
+                        if (app->physics.listening()) stopListening(*app);
+                        app->physics.takeBowl();
+                        app->demoActive = false;
+                    } else {
+                        app->physics.disturbBowl();
+                    }
+                } else if (target == ClickTarget::SulkingCat && app->physics.facingAway()) {
+                    app->previousClick = ClickTarget::None;
+                    app->physics.pokeBack();
+                } else if ((target == ClickTarget::RestingHead || target == ClickTarget::RestingBody) &&
+                           app->physics.atRest()) {
+                    if (target == ClickTarget::RestingHead && app->settings.doubleClickWake &&
+                        isDoubleClick(*app, target, local)) {
+                        if (app->physics.listening()) stopListening(*app);
+                        app->physics.wakeUp();
+                    } else {
+                        if (target == ClickTarget::RestingBody) app->previousClick = ClickTarget::None;
+                        app->physics.bounceAtRest();
+                    }
+                } else {
+                    app->previousClick = ClickTarget::None;
+                }
             }
             return 0;
 
         case WM_CAPTURECHANGED:
-            if (app) app->heldControl = PetControl::None;
+            if (app) {
+                if (app->petPressed) app->previousClick = ClickTarget::None;
+                app->petPressed = app->isDragging = false;
+                app->heldControl = PetControl::None;
+            }
             return 0;
 
         case WM_RBUTTONUP:
@@ -1432,11 +1493,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     }
 
     app.input.onKeyDown = [&](PhysicalKey k) {
-        resumeFromIdleInput(app);
+        app.observedKeyActivity = app.input.lastKeyActivityTime;
+        resumeFromInput(app, app.observedKeyActivity);
         app.physics.triggerKeyDown(k, app.settings);
     };
     app.input.onMouseClick = [&](int btn, bool down) {
-        if (app.isVisible && app.settings.showControls && mouseIsUnlocked(app)) {
+        app.observedMouseActivity = app.input.lastMouseMoveTime;
+        bool wakeOnClick = down && !app.settings.doubleClickWake && app.physics.atRest();
+        if (app.isVisible && (app.settings.showControls || wakeOnClick) && mouseIsUnlocked(app)) {
             RECT bounds{};
             POINT cursor{};
             GetWindowRect(app.hwnd, &bounds);
@@ -1446,8 +1510,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
                 if (!down && !app.settings.tabletMode) app.physics.triggerMouseClick(btn, false, app.settings);
                 return;
             }
+            if (wakeOnClick && PtInRect(&bounds, cursor) && pointerOnPet(app, point)) wakeOnClick = false;
         }
-        if (down) resumeFromIdleInput(app);
+        if (wakeOnClick) resumeFromInput(app, app.input.lastMouseClickTime);
         app.physics.triggerMouseClick(btn, down, app.settings);
     };
 

@@ -41,6 +41,7 @@ struct CatSettings {
     bool showKeyBadges = true;
     bool showMouseBadges = true;
     bool showControls = false;
+    bool doubleClickWake = true;
     bool showKeyLegends = true;
     bool footEasterEgg = true;
     bool petInteraction = true;
@@ -70,6 +71,7 @@ struct CatSettings {
         tabletMode = readDword(L"TabletMode", 1) != 0;
         showKeyBadges    = readDword(L"ShowKeyBadges", 1) != 0;
         showMouseBadges  = readDword(L"ShowMouseBadges", 1) != 0;
+        doubleClickWake  = readDword(L"DoubleClickWake", 1) != 0;
         showKeyLegends   = readDword(L"ShowKeyLegends", 1) != 0;
         footEasterEgg    = readDword(L"FootEasterEgg", 1) != 0;
         petInteraction   = readDword(L"PetInteraction", 1) != 0;
@@ -98,6 +100,7 @@ struct CatSettings {
         if (!autoDeskMode) writeDword(L"TabletMode", tabletMode);
         writeDword(L"ShowKeyBadges", showKeyBadges ? 1 : 0);
         writeDword(L"ShowMouseBadges", showMouseBadges ? 1 : 0);
+        writeDword(L"DoubleClickWake", doubleClickWake);
         writeDword(L"ShowKeyLegends", showKeyLegends ? 1 : 0);
         writeDword(L"FootEasterEgg", footEasterEgg ? 1 : 0);
         writeDword(L"PetInteraction", petInteraction ? 1 : 0);
@@ -221,10 +224,18 @@ public:
     bool feeding() const { return treatAge_ >= 0.0f; }
     bool bowlVisible() const { return feeding() && treatAge_ < BowlEnd; }
     bool listening() const { return listening_; }
+    bool atRest() const { return (resting() || listening()) && !feeding() && !ignoring(); }
     bool angry() const { return (bellyHovered_ && usingDesk()) || time < annoyedUntil_; }
     bool ignoring(double now = nowSeconds()) const { return now < ignoreUntil_; }
     float turnAway() const { return turnAway_; }
+    bool facingAway() const { return turnAway_ == 1.0f && ignoring(); }
+    float furPuff() const { return furPuff_; }
+    float furPulseAge() const { return time - furPulseStarted_; }
+    float backAngerPhase() const { return std::fmod(time - turnScoldTime_, 1.65f) / 1.65f; }
     float tailImpatience() const { return tailImpatience_; }
+    float tailKeyReach() const { return tailKeyReach_; }
+    float tailKeyDip() const { return tailKeyDip_; }
+    Pt tailKeyPoint() const { return tailKeyPoint_; }
     float tailSlapTime() const { return tailSlapTime_; }
     float angerMarkProgress() const {
         const float turnAge = time - turnScoldTime_;
@@ -245,20 +256,32 @@ public:
     void goToSleep() {
         treatAge_ = -1.0f;
         sleeping_ = true;
-        idleRestSince_ = -1.0;
+        restStarted_ = nowSeconds();
         clearDeskPose();
     }
 
-    void beginIdleRest(double now) { idleRestSince_ = now; }
-
     bool canResumeFromInput(double activity) const {
-        return idleRestSince_ >= 0.0 && activity > idleRestSince_ &&
-               activity - idleRestSince_ <= 300.0 && !ignoring();
+        return atRest() && activity > restStarted_;
+    }
+
+    void bounceAtRest() {
+        bodySquash.velocity = sleeping_ ? -2.2f : -4.7f;
+        headOffsetY.velocity = sleeping_ ? 550.0f : 230.0f;
+        earTwitch.velocity += 2.4f;
+    }
+
+    void pokeBack() {
+        const double now = nowSeconds();
+        if (now >= backPuffUntil_) backPokes_ = 0;
+        backPuffUntil_ = now + 5.0;
+        backPokes_ = std::min(backPokes_ + 1, 6);
+        if (backPokes_ > 1) furPulseStarted_ = time;
+        bodySquash.velocity = -2.8f;
+        headOffsetY.velocity = 310.0f;
     }
 
     void wakeUp() {
         sleeping_ = false;
-        idleRestSince_ = -1.0;
         workSeconds_ = 0.0f;
         lastPetTime_ = nowSeconds();
         sleepZCooldown_ = 0.0f;
@@ -277,8 +300,8 @@ public:
 
     void listenToMusic(bool enabled) {
         listening_ = enabled;
-        idleRestSince_ = -1.0;
         if (!enabled) return;
+        restStarted_ = nowSeconds();
         lastPetTime_ = nowSeconds();
         workSeconds_ = 0.0f;
         treatAge_ = -1.0f;
@@ -286,15 +309,12 @@ public:
         clearDeskPose();
     }
 
-    enum class Break { None, Idle, Work };
-
-    Break breakDue(float elapsed, const InputEngine& engine, double now, bool overControl) {
-        if (!usingDesk()) return Break::None;
+    bool breakDue(float elapsed, const InputEngine& engine, double now, bool overControl) {
+        if (!usingDesk()) return false;
         const bool working = engine.activelyUsed(now);
         if (working && !overControl) workSeconds_ += elapsed;
-        if (workSeconds_ >= workLimit_) return Break::Work;
-        if (!working && now - std::max(engine.lastActivity(), lastPetTime_) >= IdleSeconds) return Break::Idle;
-        return Break::None;
+        return workSeconds_ >= workLimit_ ||
+               (!working && now - std::max(engine.lastActivity(), lastPetTime_) >= IdleSeconds);
     }
 
     void disturbBowl() {
@@ -305,9 +325,9 @@ public:
     void takeBowl() {
         flattenEars();
         turnScoldTime_ = time;
+        backPokes_ = 0;
         airplaneUntil_ = time + 0.91f;
         treatAge_ = -1.0f;
-        idleRestSince_ = -1.0;
         turnStarts_ = nowSeconds() + 0.58;
         ignoreUntil_ = turnStarts_ + 180.0;
         sparkles.clear();
@@ -409,7 +429,27 @@ public:
         hasLastTypedPoint_ = true;
         lastTypedPoint_ = pt;
 
-        if (prefersViewerLeftPaw(key)) {
+        bool footTap = false, tailTap = false;
+        if (settings.footEasterEgg) {
+            const size_t previousSpeed = typingTaps_.size();
+            while (!typingTaps_.empty() && now - typingTaps_.front() >= 1.0) typingTaps_.pop_front();
+            if (typingTaps_.empty()) typingBeat_ = 0;
+            const int speed = static_cast<int>(typingTaps_.size()) + 1;
+            const int beat = typingBeat_;
+            typingBeat_ = (beat + 1) % 12;
+            typingTaps_.push_back(now);
+            tailTap = speed >= 11 && (previousSpeed < 11 || beat % 4 == 3) && tailImpatience_ <= 0.001f;
+            footTap = !tailTap && speed >= 7 && (previousSpeed < 7 || beat % (speed >= 11 ? 4 : 3) == 2);
+        }
+        if (tailTap) {
+            recentTailKey_ = vk;
+            recentTailTime_ = now;
+            tailKeyPoint_ = pt;
+        } else if (footTap) {
+            recentFootKey_ = vk;
+            recentFootTime_ = now;
+            hindFoot.y.velocity -= 135.0f;
+        } else if (prefersViewerLeftPaw(key)) {
             recentLeftKey_ = vk;
             recentLeftTime_ = now;
             leftPaw.y.velocity -= 180.0f;
@@ -518,12 +558,16 @@ public:
         double now = nowSeconds();
         if (ignoreUntil_ > 0.0 && now >= ignoreUntil_) {
             ignoreUntil_ = 0.0;
+            backPokes_ = 0;
             lastPetTime_ = now;
         }
         const bool sulking = ignoring(now);
         const float turnTarget = sulking && now >= turnStarts_ ? 1.0f : 0.0f;
         turnProgress_ += std::clamp(turnTarget - turnProgress_, -dt / 0.84f, dt / 0.84f);
         turnAway_ = ease(turnProgress_);
+        if (now >= backPuffUntil_) backPokes_ = 0;
+        const float puffTarget = std::max(0, backPokes_ - 1) / 5.0f;
+        furPuff_ += std::clamp(puffTarget - furPuff_, -dt * 2.8f, dt * 4.5f);
         if (feeding() && time >= bowlScoldUntil_) {
             treatAge_ += bowlVisible() ? dt * 0.5f : dt;
             if (treatAge_ >= 5.24f) {
@@ -606,14 +650,26 @@ public:
         huntIntensity.step(dt, 85.0f, 16.0f);
         float hunt = std::clamp(huntIntensity.value, 0.0f, 1.0f);
 
-        // 3. Limb assignment (Left Paw, Right Paw, 3-Key Hind Foot!)
+        // 3. Limb assignment
         constexpr double tapHoldWindow = 0.14;
         bool mouseRecent = (now - engine.lastMouseMoveTime < 2.2) || engine.leftMouseDown || engine.rightMouseDown;
         bool mouseActivelyUsed = (now - engine.lastMouseMoveTime < 0.75) || engine.leftMouseDown || engine.rightMouseDown;
+        bool extraTyping = deskActive && !settings.tabletMode && settings.footEasterEgg;
+        PhysicalKey footKey = extraTyping && now - recentFootTime_ < 0.20 ? recentFootKey_ : PhysicalKey::None;
+        double tailAge = now - recentTailTime_;
+        bool tailTyping = extraTyping && !impatient && tailImpatience_ <= 0.001f &&
+                          recentTailKey_ != PhysicalKey::None && tailAge < 0.24;
+        tailKeyReach_ = tailTyping ? ease((float)(tailAge / 0.075)) * ease((float)((0.24 - tailAge) / 0.095)) : 0.0f;
+        tailKeyDip_ = tailTyping ? ease((float)((tailAge - 0.05) / 0.042)) : 0.0f;
+        auto assignedToExtra = [&](PhysicalKey key) {
+            PhysicalKey visual = visualKeyOf(key);
+            return visual == footKey || (tailTyping && visual == recentTailKey_);
+        };
 
         std::vector<PhysicalKey> leftCands, rightCands;
         if (deskActive) {
             for (PhysicalKey k : orderedKeys) {
+                if (assignedToExtra(k)) continue;
                 if (prefersViewerLeftPaw(k)) leftCands.push_back(k);
                 else rightCands.push_back(k);
             }
@@ -621,7 +677,6 @@ public:
 
         PhysicalKey leftKey = leftCands.empty() ? PhysicalKey::None : leftCands.back();
         PhysicalKey rightKey = rightCands.empty() ? PhysicalKey::None : rightCands.back();
-        PhysicalKey footKey = PhysicalKey::None;
 
         if (leftKey == PhysicalKey::None && rightCands.size() >= 2 && !mouseActivelyUsed) {
             auto sorted = rightCands;
@@ -639,22 +694,12 @@ public:
             rightKey = sorted.back();
         }
 
-        if (deskActive && settings.footEasterEgg) {
-            if (orderedKeys.size() >= 3) {
-                for (PhysicalKey k : orderedKeys) {
-                    if (k != leftKey && k != rightKey) { footKey = k; break; }
-                }
-            } else if (mouseActivelyUsed && leftKey == PhysicalKey::None && rightCands.size() >= 2) {
-                for (PhysicalKey k : rightCands) {
-                    if (k != rightKey) { footKey = k; break; }
-                }
-            }
-        }
-
-        if (leftKey == PhysicalKey::None && recentLeftKey_ != PhysicalKey::None && now - recentLeftTime_ < tapHoldWindow) {
+        if (leftKey == PhysicalKey::None && recentLeftKey_ != PhysicalKey::None &&
+            now - recentLeftTime_ < tapHoldWindow && !assignedToExtra(recentLeftKey_)) {
             leftKey = recentLeftKey_;
         }
-        if (rightKey == PhysicalKey::None && recentRightKey_ != PhysicalKey::None && now - recentRightTime_ < tapHoldWindow) {
+        if (rightKey == PhysicalKey::None && recentRightKey_ != PhysicalKey::None &&
+            now - recentRightTime_ < tapHoldWindow && !assignedToExtra(recentRightKey_)) {
             rightKey = recentRightKey_;
         }
 
@@ -758,6 +803,7 @@ public:
         bodySquash.step(dt, 280.0f, 18.0f);
         headOffsetY.step(dt, 180.0f, 19.0f);
         float joy = std::max(petHeadIntensity, petBodyIntensity);
+        float backEars = ease((turnAway_ - 0.65f) / 0.35f);
         for (int i = 0; i < 2; ++i) {
             float phase = time * 2.1f + i * 0.28f;
             float angle = 0.22f + 0.07f * std::sin(phase)
@@ -766,7 +812,7 @@ public:
             angle += sleepiness * (0.27f + 0.06f * std::sin(time * 1.3f + i));
             if (time < annoyedUntil_) angle = 0.83f + 0.13f * std::sin(time * 6.0f + i * 2.0f);
             if (time < airplaneUntil_ || (bellyHovered_ && deskActive)) angle = 1.54f;
-            earAngles_[i].target = angle;
+            earAngles_[i].target = angle + (0.64f - angle) * backEars;
             earAngles_[i].step(dt, 190.0f, 19.0f);
             earFlick_[i].step(dt, 420.0f, 9.0f);
         }
@@ -905,7 +951,7 @@ public:
 private:
     static constexpr float workLimit_ = 25.0f * 60.0f;
     float workSeconds_ = 0.0f;
-    double idleRestSince_ = -1.0;
+    double restStarted_ = 0.0;
     double typingSince_ = -1.0;
     float tailImpatience_ = 0.0f;
     float tailSlapTime_ = 0.0f;
@@ -922,6 +968,16 @@ private:
     float turnAway_ = 0.0f;
     float turnProgress_ = 0.0f;
     float turnScoldTime_ = -2.0f;
+    int backPokes_ = 0;
+    double backPuffUntil_ = 0.0;
+    float furPuff_ = 0.0f;
+    float furPulseStarted_ = -2.0f;
+    std::deque<double> typingTaps_;
+    int typingBeat_ = 0;
+    PhysicalKey recentFootKey_ = PhysicalKey::None, recentTailKey_ = PhysicalKey::None;
+    double recentFootTime_ = -1.0, recentTailTime_ = -1.0;
+    Pt tailKeyPoint_{};
+    float tailKeyReach_ = 0.0f, tailKeyDip_ = 0.0f;
     double turnStarts_ = 0.0;
     double ignoreUntil_ = 0.0;
     float breathPhase_ = 0.0f;
@@ -940,6 +996,8 @@ private:
         mousePressLeft = mousePressRight = Spring1D{};
         keyGlow.clear();
         recentLeftKey_ = recentRightKey_ = PhysicalKey::None;
+        recentFootKey_ = recentTailKey_ = PhysicalKey::None;
+        typingTaps_.clear();
         hasLastTypedPoint_ = false;
         huntIntensity.target = 0.0f;
         petHeadIntensity = petBodyIntensity = 0.0f;

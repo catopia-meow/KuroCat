@@ -15,7 +15,7 @@ enum class CatHitZone {
     Body, LeftEar, RightEar, Belly, Desk
 };
 
-enum class PetControl { None, Treat, Sleep, Wake, Music, Mode, KeyBubbles, MouseBubbles, Hide };
+enum class PetControl { None, Treat, Sleep, Wake, DoubleClickWake, Music, Mode, KeyBubbles, MouseBubbles, Hide };
 
 class CatRenderer {
 public:
@@ -110,10 +110,9 @@ public:
     }
 
     static CatHitZone hitTest(Pt p, const CatPhysics& physics) {
-        float cx = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
-        float breath = physics.breathingOffset();
-        Pt headCenter = { cx + physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f,
-                          126.0f + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f };
+        float cx = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value -
+                   std::sin(physics.turnAway() * 3.14159265f) * 11.0f;
+        Pt headCenter = headPosition(physics);
 
         float dx = p.x - headCenter.x, dy = p.y - headCenter.y;
         float tilt = physics.headTilt.value;
@@ -144,8 +143,9 @@ public:
             if (p.y >= top - 1 && p.y <= bottom) return CatHitZone::Desk;
         }
 
-        float bdx = (p.x - cx) / 58.0f;
-        float bdy = (p.y - 196.0f) / 56.0f;
+        float puff = physics.furPuff();
+        float bdx = (p.x - cx) / (58.0f + 16.0f * puff);
+        float bdy = (p.y - 196.0f + 16.0f * puff) / (56.0f + 11.0f * puff);
         if (bdx * bdx + bdy * bdy <= 1.0f) return CatHitZone::Body;
 
         if (p.x >= 58.0f && p.x <= 294.0f && p.y >= 232.0f && p.y <= 296.0f) return CatHitZone::Desk;
@@ -180,10 +180,7 @@ public:
         float seatX = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
         float seatY = CatPhysics::SeatAnchor.y;
 
-        Pt headCenter = {
-            seatX + physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f,
-            126.0f + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f
-        };
+        Pt headCenter = headPosition(physics);
 
         if (settings.tabletMode) {
             drawTablet(g, physics);
@@ -197,8 +194,6 @@ public:
         const float step = std::abs(std::sin(turn * 6.2831853f)) * profile;
         const float backMix = CatPhysics::ease((turn - 0.43f) / 0.37f);
         seatX -= profile * 11.0f;
-        headCenter.x += profile * 21.0f;
-        headCenter.y += profile * 1.5f - step * 3.0f;
         drawTail(g, seatX, seatY, physics, settings.coatTheme);
         drawEarsLayer(g, headCenter, physics, settings.coatTheme);
         drawUnifiedSilhouette(g, seatX, seatY, headCenter, breath, physics, settings.coatTheme, backMix);
@@ -224,25 +219,44 @@ public:
 
         // 10. Subtle Petting Sparkles & Sleep Z
         drawSparkles(g, physics, settings.eyeTheme);
-        drawAngerMark(g, headCenter, physics.angerMarkProgress());
+        if (physics.facingAway()) {
+            float phase = physics.backAngerPhase();
+            drawAngerMark(g, headCenter, phase);
+            drawAngerMark(g, headCenter, std::fmod(phase + 0.5f, 1.0f), -1.0f);
+        } else {
+            drawAngerMark(g, headCenter, physics.angerMarkProgress());
+        }
     }
 
 private:
+    static Pt headPosition(const CatPhysics& physics) {
+        float turn = physics.turnAway();
+        float profile = std::sin(turn * 3.14159265f);
+        float step = std::abs(std::sin(turn * 6.2831853f)) * profile;
+        float x = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value +
+                  physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f;
+        float y = 126.0f + physics.headOffsetY.value + physics.headPitch.value * 4.8f +
+                  physics.breathingOffset() * 1.1f;
+        return {x + profile * 21.0f, y + profile * 1.5f - step * 3.0f};
+    }
+
     enum class Limb { LeftForeleg, RightForeleg, HindLeg };
 
     struct ControlButton { PetControl control; float x, width; const wchar_t* label; };
     static constexpr float controlTop = 312.0f;
     static constexpr float controlHeight = 22.0f;
     static constexpr ControlButton controlButtons[] = {
-        {PetControl::Treat, 64, 24, L"喂零食"}, {PetControl::Sleep, 94, 24, L"白天不熬猫"},
-        {PetControl::Wake, 124, 24, L"晚上猫熬人"}, {PetControl::Music, 154, 24, L"听音乐"},
-        {PetControl::Mode, 184, 24, L"切换模式"}, {PetControl::KeyBubbles, 214, 24, L"按键气泡"},
-        {PetControl::MouseBubbles, 244, 24, L"鼠标气泡"}, {PetControl::Hide, 274, 24, L"隐藏控件"}
+        {PetControl::Treat, 66, 22, L"喂零食"}, {PetControl::Sleep, 92, 22, L"白天不熬猫"},
+        {PetControl::Wake, 118, 22, L"晚上猫熬人"}, {PetControl::DoubleClickWake, 144, 22, L"双击猫头唤醒"},
+        {PetControl::Music, 170, 22, L"听音乐"}, {PetControl::Mode, 196, 22, L"切换模式"},
+        {PetControl::KeyBubbles, 222, 22, L"按键气泡"}, {PetControl::MouseBubbles, 248, 22, L"鼠标气泡"},
+        {PetControl::Hide, 274, 22, L"隐藏控件"}
     };
 
     static bool controlActive(PetControl control, const CatSettings& settings) {
         switch (control) {
             case PetControl::Mode: return true;
+            case PetControl::DoubleClickWake: return settings.doubleClickWake;
             case PetControl::KeyBubbles: return settings.showKeyBadges;
             case PetControl::MouseBubbles: return settings.showMouseBadges;
             default: return false;
@@ -304,6 +318,12 @@ private:
                     float x = std::cos(angle), y = std::sin(angle);
                     g.DrawLine(&pen, x * 5.3f, y * 5.3f, x * 7.4f, y * 7.4f);
                 }
+                break;
+            case PetControl::DoubleClickWake:
+                g.DrawEllipse(&pen, -4.5f, -3.5f, 9.0f, 11.0f);
+                g.DrawLine(&pen, 0.0f, -3.3f, 0.0f, 0.0f);
+                g.DrawLine(&pen, -2.5f, -5.1f, -4.0f, -7.0f);
+                g.DrawLine(&pen, 1.2f, -5.3f, 2.0f, -7.7f);
                 break;
             case PetControl::Music:
                 g.DrawArc(&pen, -6.3f, -6.6f, 12.6f, 13.2f, 180.0f, 180.0f);
@@ -676,6 +696,24 @@ private:
         }
     }
 
+    static Gdiplus::PointF cubicPoint(Gdiplus::PointF a, Gdiplus::PointF b, Gdiplus::PointF c, Gdiplus::PointF d, float t) {
+        float u = 1.0f - t;
+        return {u*u*u*a.X + 3*u*u*t*b.X + 3*u*t*t*c.X + t*t*t*d.X,
+                u*u*u*a.Y + 3*u*u*t*b.Y + 3*u*t*t*c.Y + t*t*t*d.Y};
+    }
+
+    static Gdiplus::PointF cubicTangent(Gdiplus::PointF a, Gdiplus::PointF b, Gdiplus::PointF c, Gdiplus::PointF d, float t) {
+        float u = 1.0f - t;
+        return {u*u*(b.X-a.X) + 2*u*t*(c.X-b.X) + t*t*(d.X-c.X),
+                u*u*(b.Y-a.Y) + 2*u*t*(c.Y-b.Y) + t*t*(d.Y-c.Y)};
+    }
+
+    static float furRipple(float age, float delay) {
+        float phase = age - delay;
+        if (phase <= 0.0f || phase >= 0.55f) return 0.0f;
+        return std::sin(phase * 27.0f) * std::exp(-phase * 7.5f) * CatPhysics::ease((0.55f - phase) / 0.15f);
+    }
+
     // MARK: - Tail
 
     static void drawTail(Gdiplus::Graphics& g, float seatX, float seatY, const CatPhysics& physics, CatCoatTheme coat) {
@@ -695,6 +733,11 @@ private:
         PointF c2(seatX + tipDirection * (66.0f + wag2 * 0.4f) - curl * 26.0f, seatY - 26.0f + wag1 * 0.7f + huntDrop + curl * 13.0f);
         PointF tip(seatX + tipDirection * (91.0f + wag2 * 0.5f) - curl * 16.0f, seatY - 30.0f + wag1 * 0.85f + huntDrop + curl * 14.0f);
         float impatient = physics.tailImpatience();
+        float puff = physics.furPuff();
+        auto blend = [](PointF& point, PointF target, float amount) {
+            point.X += (target.X - point.X) * amount;
+            point.Y += (target.Y - point.Y) * amount;
+        };
         if (impatient > 0.001f) {
             float beat = std::fmod(physics.tailSlapTime(), 0.56f) / 0.56f;
             auto lift = [](float phase) {
@@ -709,43 +752,54 @@ private:
             PointF raisedMiddle(seatX + direction * (77.0f - 24.0f * middleLift), seatY + 15.0f - 69.0f * middleLift);
             PointF raisedTip(seatX + direction * (99.0f - 21.0f * tipLift - 5.0f * rebound),
                              seatY + 11.0f - 59.0f * tipLift - 10.0f * rebound);
-            c1.X += (raisedBase.X - c1.X) * impatient; c1.Y += (raisedBase.Y - c1.Y) * impatient;
-            c2.X += (raisedMiddle.X - c2.X) * impatient; c2.Y += (raisedMiddle.Y - c2.Y) * impatient;
-            tip.X += (raisedTip.X - tip.X) * impatient; tip.Y += (raisedTip.Y - tip.Y) * impatient;
+            blend(c1, raisedBase, impatient);
+            blend(c2, raisedMiddle, impatient);
+            blend(tip, raisedTip, impatient);
+        } else if (physics.tailKeyReach() > 0.0f) {
+            float reach = physics.tailKeyReach();
+            Pt key = physics.tailKeyPoint();
+            blend(c1, {seatX + 118.0f, seatY - 35.0f}, reach);
+            blend(c2, {std::max(key.x + 46.0f, seatX + 78.0f), key.y + 34.0f}, reach);
+            blend(tip, {key.x, key.y - 14.0f * (1.0f - physics.tailKeyDip())}, reach);
         }
+        blend(c1, {seatX + direction * 55.0f, seatY + 4.0f}, puff);
+        blend(c2, {seatX + tipDirection * 80.0f, seatY + 5.0f}, puff);
+        blend(tip, {seatX + tipDirection * 93.0f, seatY - 7.0f + wag1 * 0.30f}, puff);
 
-        Pen tailPen(earTailColor(coat), 11.0f);
+        Pen tailPen(earTailColor(coat), 11.0f + 3.5f * puff);
         tailPen.SetStartCap(LineCapRound);
         tailPen.SetEndCap(LineCapRound);
         tailPen.SetLineJoin(LineJoinRound);
         g.DrawBezier(&tailPen, root, c1, c2, tip);
         if (patterned(coat)) {
             GraphicsState state = g.Save();
-            GraphicsPath outline; outline.AddBezier(root,c1,c2,tip); outline.Widen(&tailPen);
+            GraphicsPath outline;
+            outline.AddBezier(root, c1, c2, tip);
+            outline.Widen(&tailPen);
             g.SetClip(&outline, CombineModeIntersect);
             Pen ring(rgb(coat == CatCoatTheme::Shorthair ? 0x55595A : 0xA57543,128),3.5f);
             for (float t : {0.50f,0.78f}) {
-                float u=1-t;
-                float x=u*u*u*root.X+3*u*u*t*c1.X+3*u*t*t*c2.X+t*t*t*tip.X;
-                float y=u*u*u*root.Y+3*u*u*t*c1.Y+3*u*t*t*c2.Y+t*t*t*tip.Y;
-                float dx=3*u*u*(c1.X-root.X)+6*u*t*(c2.X-c1.X)+3*t*t*(tip.X-c2.X);
-                float dy=3*u*u*(c1.Y-root.Y)+6*u*t*(c2.Y-c1.Y)+3*t*t*(tip.Y-c2.Y);
-                float len=std::max(0.001f,std::hypot(dx,dy)),nx=-dy/len*8,ny=dx/len*8;
-                g.DrawLine(&ring,x+nx,y+ny,x-nx,y-ny);
+                auto p = cubicPoint(root, c1, c2, tip, t);
+                auto tangent = cubicTangent(root, c1, c2, tip, t);
+                float length = std::max(0.001f, std::hypot(tangent.X, tangent.Y));
+                float span = (8.0f + 3.0f * puff) / length;
+                float nx = -tangent.Y * span, ny = tangent.X * span;
+                g.DrawLine(&ring, p.X + nx, p.Y + ny, p.X - nx, p.Y - ny);
             }
             g.Restore(state);
         }
     }
 
-    static void drawAngerMark(Gdiplus::Graphics& g, Pt head, float progress) {
+    static void drawAngerMark(Gdiplus::Graphics& g, Pt head, float progress, float side = 1.0f) {
         using namespace Gdiplus;
         if (progress >= 1.0f) return;
         float appear = CatPhysics::ease(progress / 0.18f);
         float fade = 1.0f - CatPhysics::ease((progress - 0.65f) / 0.35f);
         float size = 0.65f + 0.43f * appear + 0.12f * std::sin(3.14159265f * appear);
+        if (side < 0.0f) size *= 0.76f;
         GraphicsState state = g.Save();
-        g.TranslateTransform(head.x + 44.0f + progress * 4.0f, head.y - 49.0f - progress * 13.0f);
-        g.RotateTransform(14.0f - progress * 10.0f);
+        g.TranslateTransform(head.x + side * (44.0f + progress * 4.0f), head.y - 49.0f - progress * 13.0f);
+        g.RotateTransform(side * (14.0f - progress * 10.0f));
         g.ScaleTransform(size, size);
         GraphicsPath mark;
         for (float x : {-1.0f, 1.0f}) {
@@ -810,6 +864,28 @@ private:
 
     // MARK: - Unified C1-Continuous Cat Silhouette (+ Siamese 2.5D Face Mask)
 
+    static void addFurStrokes(Gdiplus::GraphicsPath& strokes, Gdiplus::PointF start,
+                              Gdiplus::PointF c1, Gdiplus::PointF c2, Gdiplus::PointF end,
+                              float reach, int count, const CatPhysics& physics) {
+        using Gdiplus::PointF;
+        constexpr float lengths[] = {0.83f, 1.0f, 0.70f, 0.93f, 0.77f};
+        const float spacing = 1.0f / count;
+        for (int i = 0; i < count; ++i) {
+            float t = (i + (i % 3 == 1 ? 0.56f : 0.45f)) * spacing;
+            PointF base = cubicPoint(start, c1, c2, end, t);
+            PointF tangent = cubicTangent(start, c1, c2, end, t);
+            float length = std::hypot(tangent.X, tangent.Y);
+            float nx = tangent.Y / length, ny = -tangent.X / length;
+            float height = std::clamp((CatPhysics::SeatAnchor.y + 12.0f - base.Y) / 145.0f, 0.0f, 1.0f);
+            float pulse = furRipple(physics.furPulseAge(), height * 0.09f);
+            float lift = reach * lengths[i % 5] * (1.0f + 0.40f * pulse);
+            float lean = (i % 2 == 0 ? 0.14f : -0.08f) * lift / length;
+            strokes.StartFigure();
+            strokes.AddLine(base.X - 3.0f * nx, base.Y - 3.0f * ny,
+                            base.X + lift * nx + lean * tangent.X, base.Y + lift * ny + lean * tangent.Y);
+        }
+    }
+
     static void drawUnifiedSilhouette(Gdiplus::Graphics& g, float seatX, float seatY, Pt headCenter, float breath,
                                       const CatPhysics& physics, CatCoatTheme coat, float back = 0.0f) {
         using namespace Gdiplus;
@@ -817,6 +893,7 @@ private:
         float pitch = physics.headPitch.value;
         float hTilt = physics.headTilt.value;
         float bTilt = physics.bodyTilt.value;
+        float puff = physics.furPuff();
 
         float cH = std::cos(hTilt), sH = std::sin(hTilt);
         auto H = [&](float lx, float ly) -> PointF {
@@ -837,30 +914,58 @@ private:
         float crownDrop = pitch * 2.0f;
         float leftCheekX = -42.5f + cheekShift * 0.4f + profile * 6.0f;
         float rightCheekX = 42.5f + cheekShift * 0.4f - profile * 10.0f;
+        const float fullness = back * (0.44f + 0.56f * CatPhysics::ease(puff));
+        const float hipSpread = 10.0f * fullness + 4.0f * puff * furRipple(physics.furPulseAge(), 0.0f);
+        const float crownY = -30.0f + crownDrop - 6.0f * fullness;
+        const float hipY = -14.0f - 8.0f * fullness;
+        const float seatWidth = 24.0f + 5.0f * fullness;
 
-        PointF crown  = H(cheekShift * 0.2f, -30.0f + crownDrop);
-        PointF rCheek = H(rightCheekX, 5.0f);
-        PointF rHip   = B(49.0f + profile * 3.0f, -14.0f);
-        PointF rBot   = B(24.0f, 12.0f);
-        PointF lBot   = B(-24.0f, 12.0f);
-        PointF lHip   = B(-49.0f, -14.0f - profile * 3.0f);
-        PointF lCheek = H(leftCheekX, 5.0f);
+        PointF crown  = H(cheekShift * 0.2f, crownY);
+        PointF rCheek = H(rightCheekX + 5.0f * fullness, 5.0f);
+        PointF rHip   = B(49.0f + profile * 3.0f + hipSpread, hipY);
+        PointF rBot   = B(seatWidth, 12.0f);
+        PointF lBot   = B(-seatWidth, 12.0f);
+        PointF lHip   = B(-49.0f - hipSpread, hipY - profile * 3.0f);
+        PointF lCheek = H(leftCheekX - 5.0f * fullness, 5.0f);
 
-        GraphicsPath path;
-        path.AddBezier(crown, H(26.0f + cheekShift * 0.3f, -30.0f + crownDrop), H(rightCheekX + 1.5f, -14.0f), rCheek);
-        path.AddBezier(rCheek, H(rightCheekX - 2.5f, 24.0f), B(51.5f, -48.0f + breath * 0.5f), rHip);
-        path.AddBezier(rHip, B(47.0f, 5.0f), B(36.0f, 12.0f), rBot);
-        path.AddLine(rBot, lBot);
-        path.AddBezier(lBot, B(-36.0f, 12.0f), B(-47.0f, 5.0f), lHip);
-        path.AddBezier(lHip, B(-51.5f, -48.0f + breath * 0.5f), H(leftCheekX + 2.5f, 24.0f), lCheek);
-        path.AddBezier(lCheek, H(leftCheekX - 1.5f, -14.0f), H(-26.0f + cheekShift * 0.3f, -30.0f + crownDrop), crown);
+        GraphicsPath path, furStrokes;
+        auto bodyCurve = [&](PointF start, PointF c1, PointF c2, PointF end, float tuftReach, int tuftCount) {
+            path.AddBezier(start, c1, c2, end);
+            if (puff > 0.0f) addFurStrokes(furStrokes, start, c1, c2, end, tuftReach * puff, tuftCount, physics);
+        };
+        const float crownSpan = 26.0f + 6.0f * fullness;
+        const float cheekControl = 1.5f + 1.5f * fullness;
+        const float shoulderControl = -2.5f + 9.0f * fullness;
+        const float flankControl = 51.5f + 6.0f * fullness;
+        const float rumpControl = 47.0f + 14.0f * fullness;
+        const float bottomControl = 36.0f + 14.0f * fullness;
+        bodyCurve(crown, H(crownSpan + cheekShift * 0.3f, crownY), H(rightCheekX + cheekControl, -14.0f - 6.0f * fullness),
+                  rCheek, 4.6f, 6);
+        bodyCurve(rCheek, H(rightCheekX + shoulderControl, 24.0f), B(flankControl, -48.0f + breath * 0.5f),
+                  rHip, 5.5f, 8);
+        bodyCurve(rHip, B(rumpControl, 5.0f - 5.0f * fullness), B(bottomControl, 12.0f),
+                  rBot, 4.1f, 6);
+        bodyCurve(rBot, B(9.0f, 12.0f), B(-9.0f, 12.0f), lBot, 1.4f, 6);
+        bodyCurve(lBot, B(-bottomControl, 12.0f), B(-rumpControl, 5.0f - 5.0f * fullness),
+                  lHip, 4.1f, 6);
+        bodyCurve(lHip, B(-flankControl, -48.0f + breath * 0.5f), H(leftCheekX - shoulderControl, 24.0f),
+                  lCheek, 5.5f, 8);
+        bodyCurve(lCheek, H(leftCheekX - cheekControl, -14.0f - 6.0f * fullness), H(-crownSpan + cheekShift * 0.3f, crownY),
+                  crown, 4.6f, 6);
         path.CloseFigure();
 
         if (back > 0.0f) {
             Color fur = coat == CatCoatTheme::Siamese ? blendColor(siameseCream(), siameseLatte(), back)
                                                      : bodyColor(coat);
             Color shoulder = blendColor(fur, rgb(0xA7A2A0), 0.14f);
-            LinearGradientBrush backFur(crown, B(0, 12), shoulder, fur);
+            LinearGradientBrush backFur(crown, B(0, 18), shoulder, fur);
+            backFur.SetWrapMode(WrapModeTileFlipXY);
+            if (puff > 0.0f) {
+                Pen outline(&backFur, 4.5f * puff);
+                outline.SetStartCap(LineCapRound);
+                outline.SetEndCap(LineCapRound);
+                g.DrawPath(&outline, &furStrokes);
+            }
             g.FillPath(&backFur, &path);
             if (coat == CatCoatTheme::Shorthair) {
                 Pen stripe(rgb(0x62605F, static_cast<BYTE>(145 * back)), 2.7f);
@@ -975,7 +1080,7 @@ private:
         g.Restore(ps);
     }
 
-    // MARK: - 3rd Key Hind Foot
+    // MARK: - Hind Foot
 
     static void drawHindFoot(Gdiplus::Graphics& g, float seatX, float seatY, const CatPhysics& physics, CatCoatTheme coat) {
         Pt hip = { seatX + 26.0f, seatY + 2.0f };

@@ -66,15 +66,18 @@ enum DeskMode: Int, CaseIterable {
 }
 
 enum PetAction: Int, CaseIterable {
-    case treat, sleep, wake, music, mode, keyBubbles, mouseBubbles, hide
+    case treat, sleep, wake, doubleClickWake, music, mode, keyBubbles, mouseBubbles, hide
     var title: String {
-        ["喂零食", "白天不熬猫", "晚上猫熬人", "听音乐", "切换模式", "按键气泡", "鼠标气泡", "隐藏控件"][rawValue]
+        ["喂零食", "白天不熬猫", "晚上猫熬人", "双击猫头唤醒", "听音乐", "切换模式", "按键气泡", "鼠标气泡", "隐藏控件"][rawValue]
     }
 }
 
 final class CatSettings {
     static let shared = CatSettings()
     var showControls = false
+    var doubleClickWake: Bool {
+        didSet { UserDefaults.standard.set(doubleClickWake, forKey: "KuroCat.DoubleClickWake") }
+    }
     var deskMode: DeskMode {
         didSet { UserDefaults.standard.set(deskMode.rawValue, forKey: "KuroCat.DeskMode") }
     }
@@ -115,6 +118,7 @@ final class CatSettings {
 
     private init() {
         let d = UserDefaults.standard
+        doubleClickWake = d.object(forKey: "KuroCat.DoubleClickWake") as? Bool ?? true
         deskMode = (d.object(forKey: "KuroCat.DeskMode") as? Int).flatMap(DeskMode.init(rawValue:)) ?? .automatic
         showKeyBadges = d.object(forKey: "KuroCat.ShowKeyBadges") as? Bool ?? true
         showMouseBadges = d.object(forKey: "KuroCat.ShowMouseBadges") as? Bool ?? true
@@ -223,7 +227,7 @@ final class CatPhysics {
     var leftPaw = Spring2D(leftPawRest)
     var rightPaw = Spring2D(rightPawRest)
     var hindFoot = Spring2D(hindFootRest)
-    var hindFootActive = Spring1D(0) // 0 = tucked, 1 = kicking 3rd key
+    var hindFootActive = Spring1D(0)
 
     var bodyShiftX = Spring1D(0)
     var bodyTilt = Spring1D(0)       // radians
@@ -288,10 +292,17 @@ final class CatPhysics {
     static let bowlEnd: CGFloat = 2.86
     static let idleSeconds: CFTimeInterval = 45
     private var workTime: CFTimeInterval = 0
-    private var idleRestSince: CFTimeInterval?
+    private var restStarted: CFTimeInterval = 0
     private var typingSince: CFTimeInterval?
     private(set) var tailImpatience: CGFloat = 0
     private(set) var tailSlapTime: CGFloat = 0
+    private var typingTaps: [CFTimeInterval] = []
+    private var typingBeat = 0
+    private var recentFootKey: (key: PhysicalKey, time: CFTimeInterval)?
+    private var recentTailKey: (key: PhysicalKey, time: CFTimeInterval)?
+    private(set) var tailKeyPoint = CGPoint.zero
+    private(set) var tailKeyReach: CGFloat = 0
+    private(set) var tailKeyDip: CGFloat = 0
     private var bellyHovered = false
     private var routineStarted = CACurrentMediaTime()
     private var lastHour: Date?
@@ -305,6 +316,10 @@ final class CatPhysics {
     private(set) var turn: CGFloat = 0
     private var turnProgress: CGFloat = 0
     private var turnScoldTime: CGFloat = -2
+    private var backPokes = 0
+    private var backPuffUntil: CFTimeInterval = 0
+    private(set) var furPuff: CGFloat = 0
+    private var furPulseStarted: CGFloat = -2
     private var leftEar = Spring1D(0)
     private var rightEar = Spring1D(0)
     private var lastEarTouch: CGFloat = -10
@@ -336,6 +351,10 @@ final class CatPhysics {
         return 1
     }
     var ignoring: Bool { CACurrentMediaTime() < ignoringUntil }
+    var facingAway: Bool { turn == 1 && ignoring }
+    var furPulseAge: CGFloat { time - furPulseStarted }
+    var backAngerPhase: CGFloat { (time - turnScoldTime).truncatingRemainder(dividingBy: 1.65) / 1.65 }
+    var atRest: Bool { (sleeping || listening) && !feeding && !ignoring }
     var usingDesk: Bool { !sleeping && !feeding && !listening && !ignoring && turn == 0 }
     var washLift: CGFloat {
         feeding ? Self.ease((treatAge - 2.85) / 0.42) * Self.ease((5.1 - treatAge) / 0.44) : 0
@@ -359,14 +378,13 @@ final class CatPhysics {
 
     func sleep() {
         sleeping = true
-        idleRestSince = nil
+        restStarted = CACurrentMediaTime()
         treatAge = -1
         clearDesk()
     }
 
     func wake() {
         sleeping = false
-        idleRestSince = nil
         workTime = 0
         routineStarted = CACurrentMediaTime()
         sparkles.removeAll { $0.isSleepZ }
@@ -374,27 +392,41 @@ final class CatPhysics {
 
     func listen(_ enabled: Bool) {
         listening = enabled
-        idleRestSince = nil
         if enabled {
             treatAge = -1
-            routineStarted = CACurrentMediaTime()
+            restStarted = CACurrentMediaTime()
+            routineStarted = restStarted
             workTime = 0
             clearDesk()
         }
     }
 
     func resumeFromInput(_ time: CFTimeInterval) {
-        guard let idleRestSince, time > idleRestSince, time - idleRestSince <= 300, !ignoring else { return }
+        guard !CatSettings.shared.doubleClickWake, atRest, time > restStarted else { return }
         if listening { onAutoWake?() }
         listen(false)
         wake()
     }
 
     func sleepAfterMusicError() {
-        let restStarted = idleRestSince
         listen(false)
         sleep()
-        idleRestSince = restStarted
+    }
+
+    func bounceAtRest() {
+        bodySquash.velocity = sleeping ? -2.2 : -4.7
+        headOffsetY.velocity = sleeping ? 550 : 230
+        earTwitch.velocity += 2.4
+    }
+
+    func pokeBack() {
+        let now = CACurrentMediaTime()
+        if now >= backPuffUntil { backPokes = 0 }
+        backPuffUntil = now + 5
+        backPokes = min(backPokes + 1, 6)
+        if backPokes > 1 { furPulseStarted = time }
+        bodySquash.velocity = -2.8
+        headOffsetY.velocity = 310
     }
 
     func offerTreat() {
@@ -446,9 +478,9 @@ final class CatPhysics {
         flattenEars()
         if take {
             turnScoldTime = time
+            backPokes = 0
             airplaneUntil = time + 0.91
             treatAge = -1
-            idleRestSince = nil
             turnStarts = CACurrentMediaTime() + 0.58
             ignoringUntil = turnStarts + 180
             sparkles.removeAll()
@@ -527,6 +559,9 @@ final class CatPhysics {
         floatingKeycaps.removeAll()
         recentLeftKey = nil
         recentRightKey = nil
+        recentFootKey = nil
+        recentTailKey = nil
+        typingTaps.removeAll(keepingCapacity: true)
         lastTypedPoint = nil
         huntIntensity.target = 0
         petHeadIntensity = 0
@@ -551,11 +586,15 @@ final class CatPhysics {
                                lastInput: CFTimeInterval, working: Bool, automatic: Bool) {
         if ignoringUntil > 0 && now >= ignoringUntil {
             ignoringUntil = 0
+            backPokes = 0
             routineStarted = now
         }
         let target: CGFloat = ignoringUntil > 0 && now >= turnStarts ? 1 : 0
         turnProgress += min(dt / 0.84, max(-dt / 0.84, target - turnProgress))
         turn = Self.ease(turnProgress)
+        if now >= backPuffUntil { backPokes = 0 }
+        let puffTarget = CGFloat(max(0, backPokes - 1)) / 5
+        furPuff += min(dt * 4.5, max(-dt * 2.8, puffTarget - furPuff))
         if feeding && time >= scoldUntil {
             treatAge += bowlVisible ? dt * 0.5 : dt
             if treatAge >= 5.24 {
@@ -566,7 +605,6 @@ final class CatPhysics {
         if mealPending && !working && (!waitsForIdle || now - lastInput >= Self.idleSeconds) && canPerform(.treat) {
             offerTreat()
         }
-        if automatic { resumeFromInput(lastInput) }
         guard automatic, usingDesk else { return }
         if working && !overControl { workTime += Double(min(rawDt, 0.10)) }
         let idle = now - max(routineStarted, max(lastInput, lastPetTime))
@@ -576,7 +614,6 @@ final class CatPhysics {
             if !Self.choosesMusic(hour: hour, roll: Double.random(in: 0..<1)) || onAutoMusic?() != true {
                 sleep()
             }
-            if idleBreak { idleRestSince = now }
         }
     }
 
@@ -611,17 +648,28 @@ final class CatPhysics {
         let pt = KeyboardLayout.canvasPoint(for: vk)
         lastTypedPoint = pt
 
-        // Snap memory to the appropriate paw with lively bounce velocity
-        let active = InputEngine.shared.activeKeys
-        let leftHeld = active.contains { $0.prefersLeftPaw }
-        let rightHeld = active.contains { !$0.prefersLeftPaw }
-
-        if key.prefersLeftPaw {
+        var footTap = false
+        var tailTap = false
+        if CatSettings.shared.footEasterEgg {
+            let previousSpeed = typingTaps.count
+            typingTaps.removeAll { now - $0 >= 1 }
+            if typingTaps.isEmpty { typingBeat = 0 }
+            typingTaps.append(now)
+            let speed = typingTaps.count
+            let beat = typingBeat
+            typingBeat = (beat + 1) % 12
+            tailTap = speed >= 11 && (previousSpeed < 11 || beat % 4 == 3) && tailImpatience <= 0.001
+            footTap = !tailTap && speed >= 7 && (previousSpeed < 7 || beat % (speed >= 11 ? 4 : 3) == 2)
+        }
+        if tailTap {
+            recentTailKey = (vk, now)
+            tailKeyPoint = pt
+        } else if footTap {
+            recentFootKey = (vk, now)
+            hindFoot.y.velocity -= 135
+        } else if key.prefersLeftPaw {
             recentLeftKey = (vk, now)
             leftPaw.y.velocity -= 180
-        } else if !rightHeld || !leftHeld {
-            recentRightKey = (vk, now)
-            rightPaw.y.velocity -= 180
         } else {
             recentRightKey = (vk, now)
             rightPaw.y.velocity -= 180
@@ -808,22 +856,43 @@ final class CatPhysics {
         huntIntensity.step(dt: dt, stiffness: 85, damping: 16)
         let hunt = max(0, min(1, huntIntensity.value))
 
-        // 3. Determine limb targets (Left Paw, Right Paw, 3rd-Key Hind Foot!)
+        // 3. Determine limb targets
         let tapHoldWindow: CFTimeInterval = 0.14
         let mouseRecent = (now - curLastMouseMove < 2.2) || curLeftMouse || curRightMouse
         let mouseActivelyUsed = (now - curLastMouseMove < 0.75) || curLeftMouse || curRightMouse
+        let typing = desk && curLastKeyTime > 0 && now - curLastKeyTime <= 2
+        if typing {
+            if typingSince == nil { typingSince = curLastKeyTime }
+        } else {
+            typingSince = nil
+        }
+        let impatient = typingSince.map { now - $0 > 60 } == true
+        let extraTyping = desk && !tabletMode && CatSettings.shared.footEasterEgg
+        let footKey: PhysicalKey? = extraTyping ? recentFootKey.flatMap { now - $0.time < 0.20 ? $0.key : nil } : nil
+        let tailKey: (key: PhysicalKey, time: CFTimeInterval)? = extraTyping && !impatient && tailImpatience <= 0.001
+            ? recentTailKey.flatMap { now - $0.time < 0.24 ? $0 : nil } : nil
+        if let tailKey {
+            let age = CGFloat(now - tailKey.time)
+            tailKeyReach = Self.ease(age / 0.075) * Self.ease((0.24 - age) / 0.095)
+            tailKeyDip = Self.ease((age - 0.05) / 0.042)
+        } else {
+            tailKeyReach = 0
+            tailKeyDip = 0
+        }
+        func assignedToExtra(_ key: PhysicalKey) -> Bool {
+            key.visualKey == footKey || key.visualKey == tailKey?.key
+        }
 
         // Partition active keys
         var leftCandidates: [PhysicalKey] = []
         var rightCandidates: [PhysicalKey] = []
-        for k in desk ? orderedKeys : [] {
+        for k in (desk ? orderedKeys : []) where !assignedToExtra(k) {
             if k.prefersLeftPaw { leftCandidates.append(k) }
             else { rightCandidates.append(k) }
         }
 
         var leftKey: PhysicalKey? = leftCandidates.last
         var rightKey: PhysicalKey? = rightCandidates.last
-        var footKey: PhysicalKey? = nil
 
         // If 2+ keys are pressed on the same side, let the free paw help —
         // UNLESS viewer-left paw (cat's right hand) is actively driving the mouse!
@@ -841,20 +910,11 @@ final class CatPhysics {
             rightKey = sorted.last
         }
 
-        // 3+ simultaneous keys (or 2+ keys while other hand is busy on the mouse!) -> HIND FOOT EASTER EGG!!
-        if CatSettings.shared.footEasterEgg {
-            if orderedKeys.count >= 3 {
-                footKey = orderedKeys.first { $0 != leftKey && $0 != rightKey }
-            } else if mouseActivelyUsed && leftKey == nil && rightCandidates.count >= 2 {
-                footKey = rightCandidates.first { $0 != rightKey }
-            }
-        }
-
         // Keep quick taps visible for a tiny snappy window
-        if leftKey == nil, let rec = recentLeftKey, now - rec.time < tapHoldWindow {
+        if leftKey == nil, let rec = recentLeftKey, now - rec.time < tapHoldWindow, !assignedToExtra(rec.key) {
             leftKey = rec.key
         }
-        if rightKey == nil, let rec = recentRightKey, now - rec.time < tapHoldWindow {
+        if rightKey == nil, let rec = recentRightKey, now - rec.time < tapHoldWindow, !assignedToExtra(rec.key) {
             rightKey = rec.key
         }
 
@@ -895,7 +955,7 @@ final class CatPhysics {
             rightPawTyping = false
         }
 
-        // Hind foot target (3rd simultaneous key!)
+        // Hind foot target
         if let fk = footKey {
             hindFoot.target = KeyboardLayout.canvasPoint(for: fk)
             hindFootActive.target = 1.0
@@ -951,8 +1011,10 @@ final class CatPhysics {
         earFold.step(dt: dt, stiffness: 120, damping: 16)
         earTwitch.step(dt: dt, stiffness: 320, damping: 16)
         let earTarget: CGFloat = time < airplaneUntil || (bellyHovered && desk) ? 1.40 : (angry ? 0.58 : 0)
-        leftEar.target = earTarget
-        rightEar.target = earTarget
+        let backEars = Self.ease((turn - 0.65) / 0.35)
+        let earAngle = earTarget + (0.58 - earTarget) * backEars
+        leftEar.target = earAngle
+        rightEar.target = earAngle
         leftEar.step(dt: dt, stiffness: 190, damping: 19)
         rightEar.step(dt: dt, stiffness: 190, damping: 19)
 
@@ -1049,13 +1111,6 @@ final class CatPhysics {
         }
 
         // 7. Tail wag speed reacts organically to energy / petting / hunting tension!
-        let typing = desk && curLastKeyTime > 0 && now - curLastKeyTime <= 2
-        if typing {
-            if typingSince == nil { typingSince = curLastKeyTime }
-        } else {
-            typingSince = nil
-        }
-        let impatient = typingSince.map { now - $0 > 60 } == true
         tailImpatience += ((impatient ? 1 : 0) - tailImpatience) * min(1, dt * 6)
         tailSlapTime = impatient || tailImpatience > 0.01 ? tailSlapTime + dt : 0
         let kpmBoost = desk ? min(2.4, CGFloat(engine.currentKPM) / 160.0) : 0
