@@ -21,7 +21,7 @@ public:
 
     static CatHitZone hitTest(Pt p, const CatPhysics& physics, CatCoatTheme coat) {
         float cx = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
-        float breath = std::sin(physics.time * 2.1f) * 1.6f;
+        float breath = physics.breathingOffset();
         Pt headCenter = { cx + physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f,
                           126.0f + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f };
 
@@ -53,13 +53,31 @@ public:
         return CatHitZone::None;
     }
 
+    static void drawTrayPortrait(Gdiplus::Graphics& g, int size, const CatSettings& settings) {
+        using namespace Gdiplus;
+        CatPhysics pose;
+        const Pt head{0, 0};
+        GraphicsState state = g.Save();
+        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        g.TranslateTransform(size * 0.5f, size * 0.55f);
+        g.ScaleTransform(size / 100.0f, size / 100.0f);
+        drawEarsLayer(g, head, pose, settings.coatTheme);
+        GraphicsPath face;
+        face.AddEllipse(-45.0f, -37.0f, 90.0f, 80.0f);
+        g.SetClip(&face, CombineModeIntersect);
+        drawUnifiedSilhouette(g, 0, CatPhysics::SeatAnchor.y - 126.0f, head, 0, pose, settings.coatTheme);
+        drawHeadFeatures(g, head, pose, settings.eyeTheme, settings.coatTheme);
+        g.Restore(state);
+    }
+
     static void draw(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings) {
         using namespace Gdiplus;
         g.SetSmoothingMode(SmoothingModeAntiAlias);
         g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
         g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
 
-        float breath = std::sin(physics.time * 2.1f) * 1.6f;
+        float breath = physics.breathingOffset();
         float seatX = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
         float seatY = CatPhysics::SeatAnchor.y;
 
@@ -93,8 +111,10 @@ public:
         drawHeadFeatures(g, headCenter, physics, settings.eyeTheme, settings.coatTheme);
 
         // 8. Front Paws (Idle Sitting & Dynamic Reaching)
-        if (settings.tabletMode) drawStylus(g, physics);
-        drawFrontPaws(g, seatX, seatY, breath, physics, settings.coatTheme, settings.tabletMode);
+        bool holdingStylus = settings.tabletMode && physics.usingDesk();
+        if (holdingStylus) drawStylus(g, physics);
+        drawFrontPaws(g, seatX, seatY, breath, physics, settings.coatTheme, holdingStylus);
+        if (physics.feeding() && physics.treatAge() < 2.86f) drawTreatBowl(g, physics.treatAge());
 
         // 9. Floating Keycap Badges (keyboard + mouse clicks)
         if (!physics.floatingKeycaps.empty()) {
@@ -584,7 +604,7 @@ private:
             }
         } else {
             GraphicsState cs = g.Save();
-            g.SetClip(&path);
+            g.SetClip(&path, CombineModeIntersect);
 
             LinearGradientBrush bodyGrad(
                 PointF(seatX, headCenter.y - 54.0f),
@@ -722,6 +742,18 @@ private:
         GraphicsState st = g.Save();
         g.TranslateTransform(proj.x, proj.y);
         g.ScaleTransform(foreX, foreY);
+
+        float relaxed = std::max(physics.sleepiness, physics.washLift());
+        if (relaxed > 0.68f) {
+            GraphicsPath lid;
+            addQuadBezier(lid, {-9.5f, 2.0f}, {0.0f, 8.4f}, {9.5f, 2.0f});
+            Color muted = blendColor(eyeCol, catBlack(), 0.43f);
+            BYTE alpha = (BYTE)(240.0f * CatPhysics::ease((relaxed - 0.68f) / 0.26f));
+            Pen line(Color(alpha, muted.GetR(), muted.GetG(), muted.GetB()), 1.55f);
+            line.SetStartCap(LineCapRound);
+            line.SetEndCap(LineCapRound);
+            g.DrawPath(&line, &lid);
+        }
 
         // Mode 1: Happy closed glowing curved line eyes (petting head!)
         if (physics.isHappyClosedEyes()) {
@@ -886,6 +918,36 @@ private:
         g.DrawLine(&nib,t.x,t.y,t.x+2.6f,t.y-5.f);
     }
 
+    static void drawTreatBowl(Gdiplus::Graphics& g, float age) {
+        using namespace Gdiplus;
+        float show = CatPhysics::ease(age / 0.28f) * CatPhysics::ease((2.86f - age) / 0.43f);
+        auto tint = [show](unsigned int hex, BYTE alpha = 255) { return rgb(hex, (BYTE)(alpha * show)); };
+        GraphicsState state = g.Save();
+        g.TranslateTransform(CatPhysics::SeatAnchor.x, 216.0f + 3.0f * (1.0f - show));
+
+        SolidBrush shadow(tint(0x161618, 64));
+        g.FillEllipse(&shadow, -20.0f, 7.7f, 40.0f, 7.3f);
+        GraphicsPath ceramic;
+        ceramic.AddBezier(-22.0f, 0.0f, -21.0f, 7.0f, -18.0f, 12.0f, 0.0f, 12.0f);
+        ceramic.AddBezier(0.0f, 12.0f, 18.0f, 12.0f, 21.0f, 7.0f, 22.0f, 0.0f);
+        ceramic.CloseFigure();
+        LinearGradientBrush glaze(PointF(0, -1), PointF(0, 13), tint(0xC2DFDC), tint(0x6B9EA2));
+        g.FillPath(&glaze, &ceramic);
+        SolidBrush rim(tint(0xD9EEEA)), interior(tint(0x668C8F));
+        g.FillEllipse(&rim, -22.0f, -6.0f, 44.0f, 12.0f);
+        g.FillEllipse(&interior, -18.5f, -3.8f, 37.0f, 7.3f);
+
+        const float eatenAt[] = {1.08f, 1.56f, 2.04f};
+        for (int i = 0; i < 3; ++i) {
+            float x = (i - 1) * 7.1f;
+            float y = i == 1 ? 0.0f : -1.0f;
+            float piece = CatPhysics::ease((eatenAt[i] - age) / 0.12f);
+            SolidBrush treat(tint(0xD5895D, (BYTE)(255 * piece)));
+            g.FillEllipse(&treat, x - 3.25f, y - 2.2f, 6.5f, 4.4f);
+        }
+        g.Restore(state);
+    }
+
     static void drawFrontPaws(Gdiplus::Graphics& g, float seatX, float seatY, float breath, const CatPhysics& physics, CatCoatTheme coat, bool tabletMode) {
         Pt lPos = physics.leftPaw.point();
         Pt rPos = tabletMode ? physics.penGrip() : physics.rightPaw.point();
@@ -896,28 +958,33 @@ private:
         auto shoulder = [&](float x) -> Pt {
             float sy=physics.bodySquash.value, sx=1+(1-sy)*0.55f;
             float c=std::cos(physics.bodyTilt.value), s=std::sin(physics.bodyTilt.value);
-            float floor=126+physics.headOffsetY.value+physics.headPitch.value*4.8f+breath*1.1f+52;
-            return {seatX+x*sx*c+43*sy*s, std::max(seatY+x*sx*s-43*sy*c,floor)};
+            float chin = 126.0f + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f;
+            float floor = chin + (physics.usingDesk() ? 52.0f : 33.0f);
+            float shoulderY = seatY + x*sx*s - 43*sy*c;
+            return {seatX+x*sx*c+43*sy*s, std::max(shoulderY, floor)};
         };
         Pt leftShoulder=shoulder(-20), rightShoulder=shoulder(20);
+        float chestFur = physics.feeding() ? 0.14f : 1.0f - physics.sleepiness * 0.80f;
 
-        if (lDist < 6.0f && !physics.leftPawOnMouse && !physics.leftPawTyping) {
+        if (physics.usingDesk() && lDist < 6.0f && !physics.leftPawOnMouse && !physics.leftPawTyping) {
             drawIdleFrontLeg(g, { seatX - 18.0f, seatY - 30.0f }, { seatX - 16.0f, seatY + 12.0f }, true, coat);
         } else {
             Pt mid = { (leftShoulder.x + lPos.x) * 0.5f - (physics.leftPawOnMouse ? 8.0f : 4.0f),
                        (leftShoulder.y + lPos.y) * 0.5f - 6.0f };
-            drawLimb(g, leftShoulder, mid, lPos, 19.0f, 13.5f, Limb::LeftForeleg, 0.78f, coat);
+            drawLimb(g, leftShoulder, mid, lPos, 19.0f, 13.5f, Limb::LeftForeleg, 0.78f, coat, chestFur);
         }
 
-        if (!tabletMode && rDist < 6.0f && !physics.rightPawTyping) {
+        if (physics.usingDesk() && !tabletMode && rDist < 6.0f && !physics.rightPawTyping) {
             drawIdleFrontLeg(g, { seatX + 18.0f, seatY - 30.0f }, { seatX + 16.0f, seatY + 12.0f }, false, coat);
         } else {
-            Pt mid = { (rightShoulder.x + rPos.x) * 0.5f + 4.0f, (rightShoulder.y + rPos.y) * 0.5f - 6.0f };
-            drawLimb(g, rightShoulder, mid, rPos, 19.0f, 13.5f, Limb::RightForeleg, 0.78f, coat);
+            float lift = physics.washLift();
+            Pt mid = { (rightShoulder.x + rPos.x) * 0.5f + 4.0f + 31.0f * lift,
+                       (rightShoulder.y + rPos.y) * 0.5f - 6.0f + 10.0f * lift };
+            drawLimb(g, rightShoulder, mid, rPos, 19.0f, 13.5f, Limb::RightForeleg, 0.78f, coat, chestFur);
         }
     }
 
-    static void fillOrcaForeleg(Gdiplus::Graphics& g, const Gdiplus::GraphicsPath& leg, Pt shoulder, Pt paw) {
+    static void fillOrcaForeleg(Gdiplus::Graphics& g, const Gdiplus::GraphicsPath& leg, Pt shoulder, Pt paw, float chestFur = 1.0f) {
         using namespace Gdiplus;
         float dx = paw.x - shoulder.x, dy = paw.y - shoulder.y;
         float length = std::max(1.0f, std::hypot(dx, dy));
@@ -926,13 +993,14 @@ private:
         constexpr float pad = 16.0f;
         float span = length + 2.0f * pad;
         float fade = std::min(34.0f, 0.52f * length);
-        Color white = pawColor(CatCoatTheme::OrcaCat);
-        Color clear(0, white.GetR(), white.GetG(), white.GetB());
         Color black = limbColor(CatCoatTheme::OrcaCat);
+        Color shoulderColor = blendColor(black, pawColor(CatCoatTheme::OrcaCat), chestFur);
+        Color clear(0, shoulderColor.GetR(), shoulderColor.GetG(), shoulderColor.GetB());
         LinearGradientBrush brush(PointF(shoulder.x - ux * pad, shoulder.y - uy * pad),
                                   PointF(paw.x + ux * pad, paw.y + uy * pad), clear, black);
         brush.SetWrapMode(WrapModeTileFlipXY);
-        Color colors[] = {clear, clear, white, rgb(0x939297), rgb(0x38373B), black, black};
+        Color colors[] = {clear, clear, shoulderColor, blendColor(black, rgb(0x939297), chestFur),
+                          blendColor(black, rgb(0x38373B), chestFur), black, black};
         REAL stops[] = {0, (pad - 3.0f) / span, (pad + fade * 0.22f) / span,
                         (pad + fade * 0.50f) / span, (pad + fade * 0.78f) / span,
                         (pad + fade) / span, 1};
@@ -983,7 +1051,8 @@ private:
         g.DrawPath(&p, &p2);
     }
 
-    static void drawLimb(Gdiplus::Graphics& g, Pt start, Pt ctrl, Pt end, float startW, float endW, Limb limb, float outlineAlpha, CatCoatTheme coat) {
+    static void drawLimb(Gdiplus::Graphics& g, Pt start, Pt ctrl, Pt end, float startW, float endW, Limb limb,
+                         float outlineAlpha, CatCoatTheme coat, float chestFur = 1.0f) {
         using namespace Gdiplus;
         bool outlineOnLeft = limb != Limb::LeftForeleg;
         constexpr int steps = 14;
@@ -1026,7 +1095,7 @@ private:
                 REAL positions[3]={0,0.30f,1};gradient.SetInterpolationColors(colors,positions,3);
                 g.FillPath(&gradient,&limbPath);
             } else if (coat == CatCoatTheme::OrcaCat && limb != Limb::HindLeg) {
-                fillOrcaForeleg(g, limbPath, start, end);
+                fillOrcaForeleg(g, limbPath, start, end, chestFur);
             } else g.FillPath(&b, &limbPath);
             if (!hasWhiteSocks(coat)) g.FillEllipse(&b, pawRect);
             else {

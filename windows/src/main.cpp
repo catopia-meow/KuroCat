@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cwchar>
 #include <algorithm>
+#include <charconv>
 #include "KeyMap.hpp"
 #include "InputEngine.hpp"
 #include "CatPhysics.hpp"
@@ -34,12 +35,12 @@ constexpr const wchar_t* VERSION_PROP = L"KuroCatVersion"; // set on the tray ow
 constexpr const wchar_t* TRAY_OWNER_CLASS = L"KuroCatTrayOwnerClass";
 constexpr const wchar_t* OVERLAY_CLASS = L"KuroCatOverlayWindowClass";
 constexpr double FRAME_INTERVAL = 1.0 / 60.0;
-constexpr const wchar_t* UPDATE_PAGE_URL = L"https://kurocat-download.app.workbuddy.host/?sharecode=JVAABIVZ7L";
-constexpr const wchar_t* UPDATE_WIN_EXE_PATH = L"/downloads/KuroCat-Windows-x64.exe?sharecode=JVAABIVZ7L";
+constexpr int ORCA_RELEASE = 3;
+constexpr char ORCA_TAG_PREFIX[] = "orca-cat-windows-";
+constexpr wchar_t ORCA_RELEASE_PAGE[] = L"https://github.com/catopia-meow/KuroCat/releases/tag/orca-cat-windows-";
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_WAKE_EXISTING = WM_APP + 2;
 constexpr UINT WM_UPDATE_CHECK_DONE = WM_APP + 3;
-constexpr UINT WM_UPDATE_DOWNLOAD_DONE = WM_APP + 4;
 constexpr UINT WM_REQUEST_QUIT = WM_APP + 5; // posted by a newer / elevated instance that is taking over
 constexpr UINT_PTR TIMER_RENDER = 1;
 constexpr int HOTKEY_CLICKTHROUGH_ID = 101;
@@ -77,17 +78,17 @@ enum MenuCmd : UINT {
     CMD_DEMO_BURST,
     CMD_RESET_POS,
     CMD_CHECK_UPDATE,
-    CMD_OPEN_UPDATE,
     CMD_RELAUNCH_ADMIN,
     CMD_TOGGLE_RUN_AS_ADMIN,
     CMD_AUTO_DESK, CMD_TABLET_MODE, CMD_CLEAR_TABLET,
-    CMD_QUIT
+    CMD_QUIT,
+    CMD_TOGGLE_SLEEP,
+    CMD_TREAT
 };
 
 struct AppState {
     HWND hwnd = nullptr;
     HWND menuOwnerHwnd = nullptr; // Non-NOACTIVATE helper window so TrackPopupMenu from tray NEVER fails!
-    HICON trayIcon = nullptr;
     NOTIFYICONDATAW nid = {};
 
     CatSettings settings;
@@ -115,9 +116,7 @@ struct AppState {
     double demoStartTime = 0.0;
     int demoStepIdx = 0;
 
-    std::wstring availableUpdateVersion;
-    std::wstring availableUpdateUrl;
-    bool isUpdating = false;
+    int openedUpdateRelease = 0;
 
     // Robustness against games, Win+L, sleep and display changes
     double nextFrameTime = 0.0;
@@ -166,8 +165,6 @@ struct AppState {
 };
 
 AppState* g_app = nullptr;
-
-HICON createCatTrayIcon();
 
 // MARK: - Windows Auto-Start (HKCU\Software\Microsoft\Windows\CurrentVersion\Run)
 
@@ -296,65 +293,21 @@ bool isForegroundFullscreen() {
 
 // MARK: - Auto Update Checker (GitHub Releases via WinHTTP)
 
-struct UpdateCheckResult {
-    bool ok = false;
-    bool manual = false;
-    bool hasUpdate = false;
-    std::wstring latestTag;
-    std::wstring releaseUrl;
-};
-
-std::wstring utf8ToWide(const std::string& s) {
-    if (s.empty()) return L"";
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    if (n <= 0) return L"";
-    std::wstring w(n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
-    return w;
-}
-
-std::string extractJsonStringField(const std::string& json, const char* fieldName) {
-    std::string key = std::string("\"") + fieldName + "\"";
-    size_t pos = json.find(key);
-    if (pos == std::string::npos) return "";
-    pos = json.find(':', pos + key.size());
-    if (pos == std::string::npos) return "";
-    pos = json.find('"', pos + 1);
-    if (pos == std::string::npos) return "";
-    size_t end = json.find('"', pos + 1);
-    if (end == std::string::npos) return "";
-    return json.substr(pos + 1, end - pos - 1);
-}
-
-bool isSemVerNewer(const std::wstring& lhs, const std::wstring& rhs) {
-    auto parse = [](const std::wstring& v) {
-        std::vector<int> parts;
-        size_t i = 0;
-        while (i < v.size() && (v[i] == L'v' || v[i] == L'V' || v[i] == L' ')) i++;
-        int cur = 0; bool inNum = false;
-        for (; i < v.size(); ++i) {
-            if (v[i] >= L'0' && v[i] <= L'9') {
-                cur = cur * 10 + (v[i] - L'0');
-                inNum = true;
-            } else if (v[i] == L'.') {
-                parts.push_back(inNum ? cur : 0);
-                cur = 0; inNum = false;
-            } else {
-                break;
-            }
-        }
-        if (inNum) parts.push_back(cur);
-        return parts;
-    };
-    auto a = parse(lhs);
-    auto b = parse(rhs);
-    size_t n = std::max(a.size(), b.size());
-    for (size_t i = 0; i < n; ++i) {
-        int va = i < a.size() ? a[i] : 0;
-        int vb = i < b.size() ? b[i] : 0;
-        if (va != vb) return va > vb;
-    }
-    return false;
+int readReleaseNumber(const std::string& response) {
+    size_t key = response.find("\"tag_name\"");
+    if (key == std::string::npos) return 0;
+    size_t colon = response.find(':', key + 10);
+    if (colon == std::string::npos) return 0;
+    size_t quote = response.find_first_not_of(" \t\r\n", colon + 1);
+    if (quote == std::string::npos || response[quote] != '"') return 0;
+    size_t firstDigit = quote + sizeof(ORCA_TAG_PREFIX);
+    if (response.compare(quote + 1, sizeof(ORCA_TAG_PREFIX) - 1, ORCA_TAG_PREFIX) != 0 ||
+        firstDigit >= response.size()) return 0;
+    size_t end = response.find('"', firstDigit);
+    if (end == std::string::npos || response[firstDigit] == '0') return 0;
+    int number = 0;
+    auto parsed = std::from_chars(response.data() + firstDigit, response.data() + end, number);
+    return parsed.ec == std::errc{} && parsed.ptr == response.data() + end && number > 0 ? number : 0;
 }
 
 /// "1.3.3" -> 10303. Stored as a window property so a newly launched (newer) build can tell
@@ -369,57 +322,9 @@ int versionToNumber(const std::wstring& v) {
     return parts[0] * 10000 + parts[1] * 100 + parts[2];
 }
 
-std::wstring currentExePath() {
-    wchar_t buf[MAX_PATH * 2] = {};
-    DWORD len = GetModuleFileNameW(nullptr, buf, (DWORD)(sizeof(buf) / sizeof(buf[0]) - 1));
-    return std::wstring(buf, len);
-}
-
-std::string extractVersionFromHtml(const std::string& html) {
-    auto parseVerAt = [&](size_t pos) -> std::string {
-        if (pos >= html.size() || (html[pos] != 'v' && html[pos] != 'V')) return "";
-        size_t i = pos + 1;
-        int dots = 0;
-        std::string ver = "v";
-        while (i < html.size()) {
-            char c = html[i];
-            if (c >= '0' && c <= '9') {
-                ver.push_back(c);
-            } else if (c == '.') {
-                dots++;
-                ver.push_back(c);
-            } else {
-                break;
-            }
-            i++;
-        }
-        return (dots >= 2 && ver.size() > 5) ? ver : "";
-    };
-
-    const char* marker = "\xE5\xB7\xB2\xE5\x8F\x91\xE5\xB8\x83"; // "已发布" in UTF-8
-    size_t mPos = html.find(marker);
-    if (mPos != std::string::npos) {
-        size_t searchStart = (mPos > 32) ? (mPos - 32) : 0;
-        for (size_t i = mPos; i > searchStart; --i) {
-            if (html[i - 1] == 'v' || html[i - 1] == 'V') {
-                std::string v = parseVerAt(i - 1);
-                if (!v.empty()) return v;
-            }
-        }
-    }
-
-    const char* verPrefix = "\xE7\x89\x88\xE6\x9C\xAC "; // "版本 " in UTF-8
-    size_t vPos = html.find(verPrefix);
-    if (vPos != std::string::npos) {
-        std::string v = parseVerAt(vPos + 7);
-        if (!v.empty()) return v;
-    }
-    return "";
-}
-
-std::string fetchWorkBuddyPath(HINTERNET hConnect, LPCWSTR path) {
+std::string fetchLatestRelease(HINTERNET hConnect) {
     std::string body;
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", L"/repos/catopia-meow/KuroCat/releases/latest", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
     if (hRequest) {
         if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
             WinHttpReceiveResponse(hRequest, nullptr)) {
@@ -446,203 +351,46 @@ std::string fetchWorkBuddyPath(HINTERNET hConnect, LPCWSTR path) {
 void startAsyncUpdateCheck(HWND notifyHwnd, bool manual, int delayMs = 0) {
     std::thread([notifyHwnd, manual, delayMs]() {
         if (delayMs > 0) Sleep((DWORD)delayMs);
-        auto* res = new UpdateCheckResult();
-        res->manual = manual;
-
-        std::wstring ua = std::wstring(L"KuroCat/") + APP_VERSION;
-        HINTERNET hSession = WinHttpOpen(ua.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (hSession) {
-            WinHttpSetTimeouts(hSession, 8000, 8000, 8000, 8000);
-            HINTERNET hConnect = WinHttpConnect(hSession, L"kurocat-download.app.workbuddy.host", INTERNET_DEFAULT_HTTPS_PORT, 0);
-            if (hConnect) {
-                std::string body = fetchWorkBuddyPath(hConnect, L"/version.json?sharecode=JVAABIVZ7L");
-                std::string tag = extractJsonStringField(body, "tag_name");
-                std::string url = extractJsonStringField(body, "html_url");
-
-                if (tag.empty()) {
-                    std::string html = fetchWorkBuddyPath(hConnect, L"/?sharecode=JVAABIVZ7L");
-                    tag = extractVersionFromHtml(html);
-                }
-
-                if (!tag.empty()) {
-                    res->ok = true;
-                    res->latestTag = utf8ToWide(tag);
-                    res->releaseUrl = url.empty() ? UPDATE_PAGE_URL : utf8ToWide(url);
-                    res->hasUpdate = isSemVerNewer(res->latestTag, APP_VERSION);
-                }
-                WinHttpCloseHandle(hConnect);
+        int release = 0;
+        HINTERNET session = WinHttpOpen(L"KuroCat-OrcaCat", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                       WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (session) {
+            WinHttpSetTimeouts(session, 8000, 8000, 8000, 8000);
+            HINTERNET connection = WinHttpConnect(session, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+            if (connection) {
+                release = readReleaseNumber(fetchLatestRelease(connection));
+                WinHttpCloseHandle(connection);
             }
-            WinHttpCloseHandle(hSession);
+            WinHttpCloseHandle(session);
         }
-
-        if (!PostMessageW(notifyHwnd, WM_UPDATE_CHECK_DONE, 0, reinterpret_cast<LPARAM>(res))) {
-            delete res;
-        }
+        PostMessageW(notifyHwnd, WM_UPDATE_CHECK_DONE, manual, release);
     }).detach();
 }
 
-struct UpdateDownloadResult {
-    bool ok = false;
-    std::wstring batPath;
-};
-
-void startInAppUpdate(AppState& app) {
-    if (app.isUpdating || !app.menuOwnerHwnd) return;
-    app.isUpdating = true;
-    HWND notifyHwnd = app.menuOwnerHwnd;
-
-    std::thread([notifyHwnd]() {
-        auto* res = new UpdateDownloadResult();
-        std::string exeBytes;
-
-        std::wstring ua = std::wstring(L"KuroCat/") + APP_VERSION;
-        HINTERNET hSession = WinHttpOpen(ua.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (hSession) {
-            WinHttpSetTimeouts(hSession, 10000, 10000, 30000, 60000);
-            HINTERNET hConnect = WinHttpConnect(hSession, L"kurocat-download.app.workbuddy.host", INTERNET_DEFAULT_HTTPS_PORT, 0);
-            if (hConnect) {
-                exeBytes = fetchWorkBuddyPath(hConnect, UPDATE_WIN_EXE_PATH);
-                WinHttpCloseHandle(hConnect);
-            }
-            WinHttpCloseHandle(hSession);
-        }
-
-        if (exeBytes.size() > 50000 && exeBytes[0] == 'M' && exeBytes[1] == 'Z') {
-            wchar_t curExe[MAX_PATH] = {};
-            GetModuleFileNameW(nullptr, curExe, MAX_PATH);
-            wchar_t tempDir[MAX_PATH] = {};
-            GetTempPathW(MAX_PATH, tempDir);
-
-            // Keep a real .exe extension so the fallback below can launch it directly.
-            std::wstring curExeStr(curExe);
-            std::wstring newExePath = (curExeStr.size() > 4 && _wcsicmp(curExeStr.c_str() + curExeStr.size() - 4, L".exe") == 0)
-                ? curExeStr.substr(0, curExeStr.size() - 4) + L".update.exe"
-                : curExeStr + L".update.exe";
-            HANDLE hNew = CreateFileW(newExePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (hNew == INVALID_HANDLE_VALUE) {
-                newExePath = std::wstring(tempDir) + L"KuroCat_update.exe";
-                hNew = CreateFileW(newExePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            }
-            if (hNew != INVALID_HANDLE_VALUE) {
-                DWORD written = 0;
-                BOOL okWrite = WriteFile(hNew, exeBytes.data(), (DWORD)exeBytes.size(), &written, nullptr);
-                CloseHandle(hNew);
-                if (okWrite && written == (DWORD)exeBytes.size()) {
-                    std::wstring batPath = std::wstring(tempDir) + L"kurocat_update.bat";
-                    DWORD pid = GetCurrentProcessId();
-                    std::string batUtf8 = "@echo off\r\n:wait\r\n"
-                        "tasklist /FI \"PID eq " + std::to_string(pid) + "\" 2>nul | find \"" + std::to_string(pid) + "\" >nul\r\n"
-                        "if not errorlevel 1 (\r\n"
-                        "  ping -n 2 127.0.0.1 >nul\r\n"
-                        "  goto wait\r\n"
-                        ")\r\n";
-
-                    auto wideToUtf8 = [](const std::wstring& w) -> std::string {
-                        if (w.empty()) return "";
-                        int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
-                        std::string s(n, '\0');
-                        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
-                        return s;
-                    };
-                    // Use local ANSI codepage for cmd.exe .bat compatibility
-                    auto wideToAcp = [](const std::wstring& w) -> std::string {
-                        if (w.empty()) return "";
-                        int n = WideCharToMultiByte(CP_ACP, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
-                        std::string s(n, '\0');
-                        WideCharToMultiByte(CP_ACP, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
-                        return s;
-                    };
-                    (void)wideToUtf8;
-                    std::string srcAcp = wideToAcp(newExePath);
-                    std::string dstAcp = wideToAcp(curExe);
-
-                    // Per-user fallback location (no admin rights needed) for when the old exe cannot be
-                    // overwritten (read-only folder, antivirus lock...). Previously the move failed silently,
-                    // the OLD exe was restarted and users kept being told a new version was available.
-                    wchar_t localAppData[MAX_PATH] = {};
-                    GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-                    std::wstring fallbackDirW = localAppData[0] ? (std::wstring(localAppData) + L"\\Programs\\KuroCat")
-                                                                : (std::wstring(tempDir) + L"KuroCat");
-                    std::string fbDirAcp = wideToAcp(fallbackDirW);
-                    std::string fbExeAcp = fbDirAcp + "\\KuroCat.exe";
-
-                    batUtf8 += "set /a tries=0\r\n"
-                               ":retry\r\n"
-                               "move /y \"" + srcAcp + "\" \"" + dstAcp + "\" >nul 2>&1\r\n"
-                               "if not errorlevel 1 goto launch\r\n"
-                               "set /a tries+=1\r\n"
-                               "if %tries% lss 15 (\r\n"
-                               "  ping -n 2 127.0.0.1 >nul\r\n"
-                               "  goto retry\r\n"
-                               ")\r\n"
-                               "if not exist \"" + fbDirAcp + "\" mkdir \"" + fbDirAcp + "\"\r\n"
-                               "copy /y \"" + srcAcp + "\" \"" + fbExeAcp + "\" >nul 2>&1\r\n"
-                               "if errorlevel 1 goto launch\r\n"
-                               "del /q \"" + srcAcp + "\" >nul 2>&1\r\n"
-                               "start \"\" \"" + fbExeAcp + "\"\r\n"
-                               "goto done\r\n"
-                               ":launch\r\n"
-                               "start \"\" \"" + dstAcp + "\"\r\n"
-                               ":done\r\n"
-                               "del \"%~f0\"\r\n";
-
-                    HANDLE hBat = CreateFileW(batPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-                    if (hBat != INVALID_HANDLE_VALUE) {
-                        DWORD bw = 0;
-                        BOOL okBat = WriteFile(hBat, batUtf8.data(), (DWORD)batUtf8.size(), &bw, nullptr);
-                        CloseHandle(hBat);
-                        if (okBat && bw == (DWORD)batUtf8.size()) {
-                            res->ok = true;
-                            res->batPath = batPath;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!PostMessageW(notifyHwnd, WM_UPDATE_DOWNLOAD_DONE, 0, reinterpret_cast<LPARAM>(res))) {
-            delete res;
-        }
-    }).detach();
-}
-
-void registerTrayIcon(AppState& app) {
-    if (!app.trayIcon) app.trayIcon = createCatTrayIcon();
-    app.nid = {};
-    app.nid.cbSize = sizeof(app.nid);
-    app.nid.hWnd = app.menuOwnerHwnd ? app.menuOwnerHwnd : app.hwnd;
-    app.nid.uID = 1;
-    app.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    app.nid.uCallbackMessage = WM_TRAYICON;
-    app.nid.hIcon = app.trayIcon;
-    wcscpy_s(app.nid.szTip, L"KuroCat \u9ED1\u732B\u952E\u76D8\u684C\u5BA0 (\u53F3\u952E/\u5DE6\u952E\u6253\u5F00\u83DC\u5355)");
-    Shell_NotifyIconW(NIM_ADD, &app.nid);
-}
-
-HICON createCatTrayIcon() {
+void setTrayPortrait(AppState& app, DWORD action) {
     using namespace Gdiplus;
-    constexpr int sz = 32;
-    Bitmap bmp(sz, sz, PixelFormat32bppPARGB);
-    Graphics g(&bmp);
-    g.SetSmoothingMode(SmoothingModeAntiAlias);
-    g.Clear(Color(0, 0, 0, 0));
+    constexpr int size = 64;
+    Bitmap portrait(size, size, PixelFormat32bppPARGB);
+    {
+        Graphics g(&portrait);
+        g.Clear(Color(0, 0, 0, 0));
+        CatRenderer::drawTrayPortrait(g, size, app.settings);
+    }
 
-    SolidBrush black(Color(255, 22, 22, 26));
-    PointF lEar[3] = { {4, 15}, {6, 3}, {14, 11} };
-    PointF rEar[3] = { {28, 15}, {26, 3}, {18, 11} };
-    g.FillPolygon(&black, lEar, 3);
-    g.FillPolygon(&black, rEar, 3);
-    g.FillEllipse(&black, 4.0f, 8.0f, 24.0f, 21.0f);
-
-    SolidBrush lime(Color(255, 201, 242, 64));
-    g.FillEllipse(&lime, 8.5f, 14.5f, 6.0f, 5.2f);
-    g.FillEllipse(&lime, 17.5f, 14.5f, 6.0f, 5.2f);
-    g.FillEllipse(&black, 10.7f, 15.2f, 1.8f, 3.8f);
-    g.FillEllipse(&black, 19.7f, 15.2f, 1.8f, 3.8f);
-
-    HICON hIcon = nullptr;
-    bmp.GetHICON(&hIcon);
-    return hIcon;
+    NOTIFYICONDATAW icon{};
+    icon.cbSize = sizeof(icon);
+    icon.hWnd = app.menuOwnerHwnd ? app.menuOwnerHwnd : app.hwnd;
+    icon.uID = 1;
+    icon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    icon.uCallbackMessage = WM_TRAYICON;
+    wcscpy_s(icon.szTip, L"KuroCat 桌宠（点击打开菜单）");
+    if (portrait.GetHICON(&icon.hIcon) != Ok) return;
+    if (Shell_NotifyIconW(action, &icon)) {
+        if (app.nid.hIcon) DestroyIcon(app.nid.hIcon);
+        app.nid = icon;
+    } else {
+        DestroyIcon(icon.hIcon);
+    }
 }
 
 void computeDefaultOrigin(int w, int h, int& outX, int& outY) {
@@ -794,6 +542,8 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     AppendMenuW(menu, MF_STRING, CMD_TOGGLE_VISIBLE, app.isVisible ? L"\u9690\u85CF\u5C0F\u732B" : L"\u663E\u793A\u5C0F\u732B");
+    AppendMenuW(menu, MF_STRING, CMD_TOGGLE_SLEEP, app.physics.resting() ? L"晚上猫熬人" : L"白天不熬猫");
+    AppendMenuW(menu, MF_STRING | (app.physics.feeding() ? MF_GRAYED : 0), CMD_TREAT, L"喂零食");
     AppendMenuW(menu, MF_STRING | (app.settings.fullClickThrough ? MF_CHECKED : 0), CMD_TOGGLE_CLICKTHROUGH, L"\u5B8C\u5168\u9F20\u6807\u7A7F\u900F (Ctrl+Alt+Shift+P / \u6309\u4F4FAlt\u53EF\u53F3\u952E)");
     AppendMenuW(menu, MF_STRING | (app.settings.alwaysOnTop ? MF_CHECKED : 0), CMD_TOGGLE_TOPMOST, L"\u7A97\u53E3\u7F6E\u9876\u663E\u793A");
     AppendMenuW(menu, MF_STRING | (isAutoStartEnabled() ? MF_CHECKED : 0), CMD_TOGGLE_AUTOSTART, L"\u5F00\u673A\u81EA\u52A8\u542F\u52A8");
@@ -860,15 +610,8 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_DEMO_BURST, L"\u6F14\u793A\u6253\u5B57\u52A8\u753B");
     AppendMenuW(menu, MF_STRING, CMD_RESET_POS, L"\u91CD\u7F6E\u4F4D\u7F6E\u5230\u53F3\u4E0B\u89D2");
-    if (!app.availableUpdateVersion.empty()) {
-        std::wstring upTxt = app.isUpdating
-            ? (L"\u23F3 \u6B63\u5728\u4E0B\u8F7D\u66F4\u65B0 " + app.availableUpdateVersion + L"...")
-            : (L"\U0001F195 \u53D1\u73B0\u65B0\u7248\u672C " + app.availableUpdateVersion + L" (\u70B9\u51FB\u81EA\u52A8\u66F4\u65B0)");
-        AppendMenuW(menu, MF_STRING | (app.isUpdating ? MF_GRAYED : 0), CMD_OPEN_UPDATE, upTxt.c_str());
-    } else {
-        std::wstring chkTxt = std::wstring(L"\u68C0\u67E5\u66F4\u65B0 (\u5F53\u524D v") + APP_VERSION + L")";
-        AppendMenuW(menu, MF_STRING, CMD_CHECK_UPDATE, chkTxt.c_str());
-    }
+    std::wstring checkLabel = L"检查更新（虎鲸猫 " + std::to_wstring(ORCA_RELEASE) + L"）";
+    AppendMenuW(menu, MF_STRING, CMD_CHECK_UPDATE, checkLabel.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_QUIT, L"\u9000\u51FA KuroCat");
 
@@ -878,7 +621,20 @@ void showContextMenu(AppState& app, POINT screenPt) {
     PostMessageW(menuOwner, WM_NULL, 0, 0);
     DestroyMenu(menu);
 
+    const auto previousCoat = app.settings.coatTheme;
+    const auto previousEyes = app.settings.eyeTheme;
     switch (cmd) {
+        case CMD_TOGGLE_SLEEP:
+            if (app.physics.resting()) app.physics.wakeUp();
+            else app.physics.goToSleep();
+            break;
+        case CMD_TREAT:
+            app.physics.offerTreat();
+            if (!app.isVisible) {
+                app.isVisible = true;
+                ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
+            }
+            break;
         case CMD_TOGGLE_VISIBLE:
             app.isVisible = !app.isVisible;
             ShowWindow(app.hwnd, app.isVisible ? SW_SHOWNOACTIVATE : SW_HIDE);
@@ -984,10 +740,6 @@ void showContextMenu(AppState& app, POINT screenPt) {
         case CMD_CHECK_UPDATE:
             if (app.menuOwnerHwnd) startAsyncUpdateCheck(app.menuOwnerHwnd, true, 0);
             break;
-        case CMD_OPEN_UPDATE: {
-            startInAppUpdate(app);
-            break;
-        }
         case CMD_RELAUNCH_ADMIN:
             // The elevated copy starts with --takeover and waits for this one to exit.
             if (relaunchSelfElevated(L"--takeover --no-elevate")) quitApp(app);
@@ -1004,6 +756,9 @@ void showContextMenu(AppState& app, POINT screenPt) {
             break;
         default:
             break;
+    }
+    if (app.settings.coatTheme != previousCoat || app.settings.eyeTheme != previousEyes) {
+        setTrayPortrait(app, NIM_MODIFY);
     }
 }
 
@@ -1094,7 +849,7 @@ void tickAndRender(AppState& app) {
             }
             // Holding Alt temporarily unlocks click-through so user can ALWAYS right-click or drag the cat!
             bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-            bool overKey = app.settings.tabletMode && CatPhysics::tabletKeyAt(cp) >= 0;
+            bool overKey = app.settings.tabletMode && app.physics.usingDesk() && CatPhysics::tabletKeyAt(cp) >= 0;
             bool clickThrough = (app.settings.fullClickThrough && !altHeld) || (zone == CatHitZone::None && !overKey);
             setClickThrough(app.hwnd, clickThrough);
         } else {
@@ -1138,8 +893,8 @@ void tickAndRender(AppState& app) {
 void renderIfDue(AppState& app) {
     double now = nowSeconds();
     if (now < app.nextFrameTime) return;
-    app.nextFrameTime = (now - app.nextFrameTime < FRAME_INTERVAL) ? app.nextFrameTime + FRAME_INTERVAL
-                                                                    : now + FRAME_INTERVAL;
+    const double interval = app.physics.sleepiness > 0.96f ? 1.0 / 30.0 : FRAME_INTERVAL;
+    app.nextFrameTime = (now - app.nextFrameTime < interval) ? app.nextFrameTime + interval : now + interval;
     tickAndRender(app);
 }
 
@@ -1202,7 +957,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_LBUTTONDOWN: {
             bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
             if (app && (!app->settings.fullClickThrough || altHeld)) {
-                if (app->settings.tabletMode && !altHeld) {
+                if (app->physics.resting() && !altHeld) {
+                    app->physics.wakeUp();
+                    return 0;
+                }
+                if (app->settings.tabletMode && app->physics.usingDesk() && !altHeld) {
                     RECT bounds{};
                     GetClientRect(hwnd, &bounds);
                     Pt point{short(LOWORD(lParam)) * CatPhysics::CanvasWidth / std::max(1L, bounds.right),
@@ -1295,54 +1054,22 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_UPDATE_CHECK_DONE: {
-            auto* res = reinterpret_cast<UpdateCheckResult*>(lParam);
-            if (res) {
-                if (app && res->ok && res->hasUpdate) {
-                    app->availableUpdateVersion = res->latestTag;
-                    app->availableUpdateUrl = res->releaseUrl;
-                    // Show WHICH exe is running: the usual cause of "I already updated but it still
-                    // says there's a new version" is an old copy (Desktop / autostart) still running.
-                    std::wstring msg = L"\u53D1\u73B0 KuroCat \u65B0\u7248\u672C " + res->latestTag
-                        + L"\n\u5F53\u524D\u7248\u672C\uFF1Av" + APP_VERSION
-                        + L"\n\u5F53\u524D\u8FD0\u884C\u7684\u7A0B\u5E8F\uFF1A" + currentExePath()
-                        + L"\n\n\u5982\u679C\u4F60\u5DF2\u7ECF\u4E0B\u8F7D\u8FC7\u65B0\u7248\uFF0C\u76F4\u63A5\u53CC\u51FB\u65B0\u7248 exe \u5373\u53EF\u81EA\u52A8\u66FF\u6362\u6389\u8FD9\u4E2A\u65E7\u7248\u3002"
-                        + L"\n\n\u662F\u5426\u7ACB\u5373\u5728\u8F6F\u4EF6\u5185\u81EA\u52A8\u4E0B\u8F7D\u5E76\u66F4\u65B0\u91CD\u542F\uFF1F";
-                    if (MessageBoxW(nullptr, msg.c_str(), L"KuroCat \u66F4\u65B0\u63D0\u9192",
-                                    MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST) == IDYES) {
-                        startInAppUpdate(*app);
-                    }
-                } else if (res->manual) {
-                    if (res->ok) {
-                        std::wstring msg = std::wstring(L"\u5F53\u524D\u7248\u672C v") + APP_VERSION + L" \u5DF2\u662F\u6700\u65B0\u7248\u672C\u3002";
-                        MessageBoxW(nullptr, msg.c_str(), L"KuroCat \u68C0\u67E5\u66F4\u65B0", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
-                    } else {
-                        MessageBoxW(nullptr, L"\u65E0\u6CD5\u8FDE\u63A5\u5230\u66F4\u65B0\u670D\u52A1\u5668\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u6216\u68C0\u67E5\u7F51\u7EDC\u3002",
-                                    L"KuroCat \u68C0\u67E5\u66F4\u65B0", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-                    }
+            if (!app) return 0;
+            int release = (int)lParam;
+            bool manual = wParam != 0;
+            if (release > ORCA_RELEASE) {
+                if (manual || release > app->openedUpdateRelease) {
+                    std::wstring page = ORCA_RELEASE_PAGE + std::to_wstring(release);
+                    INT_PTR opened = (INT_PTR)ShellExecuteW(nullptr, L"open", page.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    if (opened > 32) app->openedUpdateRelease = release;
+                    else if (manual) MessageBoxW(nullptr, L"无法打开 GitHub 发布页。", L"KuroCat 检查更新", MB_OK | MB_ICONWARNING);
                 }
-                delete res;
-            }
-            return 0;
-        }
-
-        case WM_UPDATE_DOWNLOAD_DONE: {
-            auto* res = reinterpret_cast<UpdateDownloadResult*>(lParam);
-            if (res) {
-                if (app) app->isUpdating = false;
-                if (res->ok && !res->batPath.empty()) {
-                    ShellExecuteW(nullptr, L"open", res->batPath.c_str(), nullptr, nullptr, SW_HIDE);
-                    PostQuitMessage(0);
-                } else {
-                    if (MessageBoxW(nullptr,
-                                    L"\u81EA\u52A8\u4E0B\u8F7D\u6216\u66FF\u6362\u5B89\u88C5\u5305\u5931\u8D25\uFF0C\u662F\u5426\u6253\u5F00\u4E0B\u8F7D\u9875\u624B\u52A8\u4E0B\u8F7D\uFF1F",
-                                    L"KuroCat \u81EA\u52A8\u66F4\u65B0", MB_YESNO | MB_ICONWARNING | MB_TOPMOST) == IDYES) {
-                        const wchar_t* url = (app && !app->availableUpdateUrl.empty())
-                            ? app->availableUpdateUrl.c_str()
-                            : UPDATE_PAGE_URL;
-                        ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
-                    }
-                }
-                delete res;
+            } else if (manual) {
+                const wchar_t* message = release > 0
+                    ? L"GitHub 上暂无比本机更新的虎鲸猫版本。"
+                    : L"无法从 GitHub 读取虎鲸猫的发布版本。";
+                MessageBoxW(nullptr, message, L"KuroCat 检查更新",
+                            MB_OK | (release > 0 ? MB_ICONINFORMATION : MB_ICONWARNING));
             }
             return 0;
         }
@@ -1359,14 +1086,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         UnhookWinEvent(app->foregroundHook);
                         app->foregroundHook = nullptr;
                     }
+                    Shell_NotifyIconW(NIM_DELETE, &app->nid);
+                    if (app->nid.hIcon) DestroyIcon(app->nid.hIcon);
                     if (app->menuOwnerHwnd) {
                         UnregisterHotKey(app->menuOwnerHwnd, HOTKEY_CLICKTHROUGH_ID);
                         RemovePropW(app->menuOwnerHwnd, VERSION_PROP);
                         DestroyWindow(app->menuOwnerHwnd);
                         app->menuOwnerHwnd = nullptr;
                     }
-                    Shell_NotifyIconW(NIM_DELETE, &app->nid);
-                    if (app->trayIcon) DestroyIcon(app->trayIcon);
                     app->destroyBuffer();
                 }
                 PostQuitMessage(0);
@@ -1374,7 +1101,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
     }
     if (g_msgTaskbarCreated != 0 && msg == g_msgTaskbarCreated && app && hwnd == app->menuOwnerHwnd) {
-        registerTrayIcon(*app);
+        setTrayPortrait(*app, NIM_ADD);
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -1423,22 +1150,20 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     // freshly downloaded exe while the old one still sits in the tray or autostarts from another
     // folder) now replaces the old process instead of silently waking it — previously the old
     // version kept running and kept reporting "new version available".
-    HANDLE hMutex = CreateMutexW(nullptr, FALSE, kMutexName);
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, kMutexName);
     DWORD mutexErr = GetLastError();
+    if (!hMutex && mutexErr != ERROR_ACCESS_DENIED) return 1;
     bool alreadyRunning = (hMutex && mutexErr == ERROR_ALREADY_EXISTS) || (!hMutex && mutexErr == ERROR_ACCESS_DENIED);
     if (alreadyRunning) {
         HWND owner = FindWindowW(TRAY_OWNER_CLASS, nullptr);
-        if (!owner && forceTakeover) {
-            // The instance we replace is already shutting down; give it a moment to disappear.
-            for (int i = 0; i < 50 && FindWindowW(OVERLAY_CLASS, nullptr); ++i) Sleep(100);
-        } else if (!owner) {
+        if (!owner && !forceTakeover) {
             if (hMutex) CloseHandle(hMutex);
             return 0;
         }
         if (owner) {
             int runningVersion = (int)(INT_PTR)GetPropW(owner, VERSION_PROP);
             bool replace = forceTakeover || runningVersion < myVersion ||
-                           (runningVersion == myVersion && (INT_PTR)GetPropW(owner, L"KuroCatTabletMode") < 5);
+                           (runningVersion == myVersion && (INT_PTR)GetPropW(owner, L"KuroCatTabletMode") < 6);
             if (!replace || !shutDownRunningInstance(owner, 6000)) {
                 PostMessageW(owner, WM_WAKE_EXISTING, 0, 0);
                 if (hMutex) CloseHandle(hMutex);
@@ -1446,6 +1171,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
             }
         }
         if (!hMutex) hMutex = CreateMutexW(nullptr, FALSE, kMutexName);
+        if (!hMutex) return 1;
+        // A handoff may overlap another launch. Only the mutex owner can create the overlay.
+        DWORD acquired = WaitForSingleObject(hMutex, forceTakeover && !owner ? 6000 : 0);
+        if (acquired != WAIT_OBJECT_0 && acquired != WAIT_ABANDONED) {
+            CloseHandle(hMutex);
+            return 0;
+        }
     }
 
     AppState app;
@@ -1458,12 +1190,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     // "Always run as administrator": hand over to an elevated copy (one UAC prompt). If the user
     // declines, simply carry on non-elevated.
     if (app.settings.runAsAdmin && !app.isElevated && !noElevate) {
-        if (hMutex) { CloseHandle(hMutex); hMutex = nullptr; }
         if (relaunchSelfElevated(L"--takeover --no-elevate")) {
             g_app = nullptr;
+            ReleaseMutex(hMutex);
+            CloseHandle(hMutex);
             return 0;
         }
-        hMutex = CreateMutexW(nullptr, FALSE, kMutexName);
     }
 
     g_msgTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
@@ -1505,7 +1237,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         nullptr, nullptr, hInst, nullptr
     );
     if (app.menuOwnerHwnd) {
-        SetPropW(app.menuOwnerHwnd, L"KuroCatTabletMode", (HANDLE)5);
+        SetPropW(app.menuOwnerHwnd, L"KuroCatTabletMode", (HANDLE)6);
         SetPropW(app.menuOwnerHwnd, VERSION_PROP, (HANDLE)(INT_PTR)myVersion);
         // When elevated, UIPI would drop messages from the (non-elevated) taskbar and from a
         // re-launched KuroCat. Explicitly allow the few messages we rely on.
@@ -1537,13 +1269,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     if (!app.hwnd) {
         if (app.menuOwnerHwnd) DestroyWindow(app.menuOwnerHwnd);
         Gdiplus::GdiplusShutdown(gdipToken);
-        if (hMutex) CloseHandle(hMutex);
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
         return 1;
     }
 
     applyWindowScaleAndPosition(app, false);
     app.input.registerRawInput(app.hwnd);
-    registerTrayIcon(app);
+    setTrayPortrait(app, NIM_ADD);
 
     // Win+L / fast-user-switch notifications (see recoverAfterSystemEvent)
     app.sessionNotifyRegistered = WTSRegisterSessionNotification(app.hwnd, NOTIFY_FOR_THIS_SESSION) != FALSE;
@@ -1595,6 +1328,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     app.deskMonitor->stop = true;
     g_app = nullptr;
     Gdiplus::GdiplusShutdown(gdipToken);
-    if (hMutex) CloseHandle(hMutex);
+    ReleaseMutex(hMutex);
+    CloseHandle(hMutex);
     return exitCode;
 }
