@@ -14,7 +14,9 @@ Click the headphones icon to give Orca Cat headphones. It closes its eyes and no
 
 In Auto mode, Orca Cat picks up a stylus in supported art apps such as Blender, Krita, and Photoshop. It switches back to the keyboard and mouse when a text field has focus. The updater checks this fork and opens the latest release page when a newer build is available.
 
-[Download the Windows x64 app](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-3/KuroCat-OrcaCat-Windows-x64.exe)
+[Download the latest Windows x64 app](https://github.com/catopia-meow/KuroCat/releases/latest/download/KuroCat-OrcaCat-Windows-x64.exe)
+
+For Windows releases, update the release number in [OrcaVersion.h](windows/src/OrcaVersion.h). Use the first component of the built EXE's file version as `N` in the GitHub release tag `orca-cat-windows-N`.
 
 ![Orca Cat using the keyboard and listening to audio with icon controls](assets/preview_orca_cat_controls.png)
 

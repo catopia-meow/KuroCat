@@ -1,0 +1,6 @@
+#ifndef KUROCAT_ORCA_VERSION_H
+#define KUROCAT_ORCA_VERSION_H
+
+#define KUROCAT_ORCA_RELEASE 4
+
+#endif

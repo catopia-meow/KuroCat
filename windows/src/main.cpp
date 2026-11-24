@@ -20,6 +20,7 @@
 #include "CatRenderer.hpp"
 #include "DeskMode.hpp"
 #include "AudioBeat.hpp"
+#include "OrcaVersion.h"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -31,12 +32,14 @@
 
 namespace {
 
-constexpr const wchar_t* APP_VERSION = L"1.3.3";
-constexpr const wchar_t* VERSION_PROP = L"KuroCatVersion"; // set on the tray owner window so newer builds can take over older ones
+constexpr const wchar_t* VERSION_PROP = L"KuroCatVersion";
 constexpr const wchar_t* TRAY_OWNER_CLASS = L"KuroCatTrayOwnerClass";
 constexpr const wchar_t* OVERLAY_CLASS = L"KuroCatOverlayWindowClass";
 constexpr double FRAME_INTERVAL = 1.0 / 60.0;
-constexpr int ORCA_RELEASE = 3;
+constexpr int ORCA_RELEASE = KUROCAT_ORCA_RELEASE;
+static_assert(ORCA_RELEASE > 0 && ORCA_RELEASE <= 65535);
+// Keep fork releases above the legacy 1.x property values so old binaries cannot replace them.
+constexpr INT_PTR INSTANCE_VERSION = 0x1000000 + ORCA_RELEASE;
 constexpr char ORCA_TAG_PREFIX[] = "orca-cat-windows-";
 constexpr wchar_t ORCA_RELEASE_PAGE[] = L"https://github.com/catopia-meow/KuroCat/releases/tag/orca-cat-windows-";
 constexpr UINT WM_TRAYICON = WM_APP + 1;
@@ -315,18 +318,6 @@ int readReleaseNumber(const std::string& response) {
     int number = 0;
     auto parsed = std::from_chars(response.data() + firstDigit, response.data() + end, number);
     return parsed.ec == std::errc{} && parsed.ptr == response.data() + end && number > 0 ? number : 0;
-}
-
-/// "1.3.3" -> 10303. Stored as a window property so a newly launched (newer) build can tell
-/// which version is already running. Builds up to 1.3.2 never set it, which reads back as 0.
-int versionToNumber(const std::wstring& v) {
-    int parts[3] = { 0, 0, 0 };
-    int idx = 0;
-    for (wchar_t c : v) {
-        if (c >= L'0' && c <= L'9') parts[idx] = parts[idx] * 10 + (c - L'0');
-        else if (c == L'.') { if (++idx >= 3) break; }
-    }
-    return parts[0] * 10000 + parts[1] * 100 + parts[2];
 }
 
 std::string fetchLatestRelease(HINTERNET hConnect) {
@@ -1256,7 +1247,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     // Enable crisp Per-Monitor V2 DPI awareness on Windows 10/11
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-    const int myVersion = versionToNumber(APP_VERSION);
     const bool forceTakeover = commandLineHasFlag(L"--takeover");   // admin relaunch
     const bool noElevate = commandLineHasFlag(L"--no-elevate");
     const wchar_t* kMutexName = L"Local\\KuroCatDesktopPetSingleInstance";
@@ -1277,9 +1267,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
             return 0;
         }
         if (owner) {
-            int runningVersion = (int)(INT_PTR)GetPropW(owner, VERSION_PROP);
-            bool replace = forceTakeover || runningVersion < myVersion ||
-                           (runningVersion == myVersion && (INT_PTR)GetPropW(owner, L"KuroCatTabletMode") < 7);
+            INT_PTR runningVersion = reinterpret_cast<INT_PTR>(GetPropW(owner, VERSION_PROP));
+            bool replace = forceTakeover || runningVersion < INSTANCE_VERSION;
             if (!replace || !shutDownRunningInstance(owner, 6000)) {
                 PostMessageW(owner, WM_WAKE_EXISTING, 0, 0);
                 if (hMutex) CloseHandle(hMutex);
@@ -1366,8 +1355,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         nullptr, nullptr, hInst, nullptr
     );
     if (app.menuOwnerHwnd) {
-        SetPropW(app.menuOwnerHwnd, L"KuroCatTabletMode", (HANDLE)7);
-        SetPropW(app.menuOwnerHwnd, VERSION_PROP, (HANDLE)(INT_PTR)myVersion);
+        SetPropW(app.menuOwnerHwnd, VERSION_PROP, reinterpret_cast<HANDLE>(INSTANCE_VERSION));
         // When elevated, UIPI would drop messages from the (non-elevated) taskbar and from a
         // re-launched KuroCat. Explicitly allow the few messages we rely on.
         const UINT allowed[] = { WM_TRAYICON, WM_WAKE_EXISTING, WM_REQUEST_QUIT };

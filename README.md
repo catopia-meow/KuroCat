@@ -14,7 +14,9 @@
 
 在自动模式下，进入 Blender、Krita 或 Photoshop 等受支持的绘画软件时，虎鲸猫会拿起画笔。切到文字输入框时，它会换回键鼠。托盘的「检查更新」查询本 fork，发现新版会打开对应的 GitHub 发布页。
 
-[下载 Windows x64 程序](https://github.com/catopia-meow/KuroCat/releases/download/orca-cat-windows-3/KuroCat-OrcaCat-Windows-x64.exe)
+[下载最新 Windows x64 程序](https://github.com/catopia-meow/KuroCat/releases/latest/download/KuroCat-OrcaCat-Windows-x64.exe)
+
+发布 Windows 版时，在 [OrcaVersion.h](windows/src/OrcaVersion.h) 更新发布编号。从生成的 EXE 文件版本取第一段，作为 GitHub 发布标签 `orca-cat-windows-N` 中的 `N`。
 
 ![虎鲸猫图标栏、键鼠模式和闭眼听音乐](assets/preview_orca_cat_controls.png)
 
