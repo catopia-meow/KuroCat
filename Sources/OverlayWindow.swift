@@ -5,8 +5,13 @@ final class CatCanvasView: NSView {
     let physics = CatPhysics()
     var onRequestPermission: (() -> Void)?
     var onRightClickMenu: ((NSEvent) -> Void)?
+    var onAction: ((PetAction) -> Void)?
+    var onWake: (() -> Void)?
+    var onBowlTaken: (() -> Void)?
 
     private var lastHoverCanvasPt: CGPoint?
+    private var hover: PetAction?
+    private var held: PetAction?
     private var isDragging = false
     private var dragStartScreenPt: CGPoint = .zero
     private var dragStartWindowOrigin: CGPoint = .zero
@@ -15,18 +20,28 @@ final class CatCanvasView: NSView {
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
     override var acceptsFirstResponder: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    static var logicalHeight: CGFloat {
+        CatSettings.shared.showControls ? CatRenderer.controlsCanvasHeight : CatPhysics.canvasSize.height
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.clear(bounds)
 
         let scaleX = bounds.width / CatPhysics.canvasSize.width
-        let scaleY = bounds.height / CatPhysics.canvasSize.height
+        let scaleY = bounds.height / Self.logicalHeight
         ctx.saveGState()
         ctx.scaleBy(x: scaleX, y: scaleY)
 
         let showPill = InputEngine.shared.status == .needsPermission
         CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: showPill)
+        let settings = CatSettings.shared
+        if settings.showControls {
+            CatRenderer.drawControls(in: ctx, physics: physics, mode: settings.deskMode,
+                                     keyBubbles: settings.showKeyBadges, mouseBubbles: settings.showMouseBadges,
+                                     hover: hover, held: held)
+        }
 
         ctx.restoreGState()
     }
@@ -37,7 +52,7 @@ final class CatCanvasView: NSView {
         guard frame.contains(screenPt) else { return nil }
         let localX = (screenPt.x - frame.minX) / frame.width * CatPhysics.canvasSize.width
         // Convert bottom-up screen Y to flipped top-down canvas Y
-        let localY = (frame.maxY - screenPt.y) / frame.height * CatPhysics.canvasSize.height
+        let localY = (frame.maxY - screenPt.y) / frame.height * Self.logicalHeight
         return CGPoint(x: localX, y: localY)
     }
 
@@ -47,13 +62,19 @@ final class CatCanvasView: NSView {
         let screenPt = NSEvent.mouseLocation
         let showPill = InputEngine.shared.status == .needsPermission
 
-        if isDragging {
+        if isDragging || held != nil {
+            physics.setBellyHovered(false)
+            physics.overControl = held != nil
             win.ignoresMouseEvents = false
             return
         }
 
         guard let pt = canvasPoint(fromScreenPoint: screenPt) else {
             lastHoverCanvasPt = nil
+            hover = nil
+            toolTip = nil
+            physics.overControl = false
+            physics.setBellyHovered(false)
             if !win.ignoresMouseEvents {
                 win.ignoresMouseEvents = true
             }
@@ -61,15 +82,31 @@ final class CatCanvasView: NSView {
             return
         }
 
-        let zone = CatRenderer.hitTest(point: pt, physics: physics, showPermissionPill: showPill)
+        let settings = CatSettings.shared
+        let zone = CatRenderer.hitTest(point: pt, physics: physics, showPermissionPill: showPill, showControls: settings.showControls)
+        let optionHeld = NSEvent.modifierFlags.contains(.option)
+        let unlocked = !settings.fullClickThrough || optionHeld
+        if case let .control(action) = zone, unlocked {
+            if hover != action {
+                toolTip = action == .mode ? "\(settings.deskMode.title) · 点击切换" : action.title
+            }
+            hover = action
+        } else {
+            if hover != nil { toolTip = nil }
+            hover = nil
+        }
+        physics.overControl = hover != nil
+        physics.setBellyHovered(settings.petInteraction && zone == .belly)
+        if zone == .desk { physics.stopPetting() }
 
-        // Petting works in both Smart Mode and Full Click-Through Mode!
-        if zone == .head || zone == .body {
-            if let prev = lastHoverCanvasPt {
-                let delta = hypot(pt.x - prev.x, pt.y - prev.y)
-                if delta > 1.2 && delta < 80 {
-                    physics.registerPetStroke(canvasPoint: pt, delta: delta, isHead: zone == .head)
-                }
+        let ear = zone == .leftEar || zone == .rightEar
+        if zone == .head || zone == .body || ear {
+            let delta = lastHoverCanvasPt.map { hypot(pt.x - $0.x, pt.y - $0.y) } ?? 0
+            let stroke = delta > 1.2 && delta < 80
+            if ear && settings.petInteraction && (lastHoverCanvasPt == nil || stroke) {
+                physics.touchEar(left: zone == .leftEar)
+            } else if !ear && stroke {
+                physics.registerPetStroke(canvasPoint: pt, delta: delta, isHead: zone == .head)
             }
             lastHoverCanvasPt = pt
         } else {
@@ -77,8 +114,7 @@ final class CatCanvasView: NSView {
         }
 
         // Smart Click-Through logic (hold Option ⌥ to temporarily unlock Full Click-Through!)
-        let optionHeld = NSEvent.modifierFlags.contains(.option)
-        if CatSettings.shared.fullClickThrough && !optionHeld {
+        if !unlocked {
             // Keep permission pill clickable only if permission isn't granted yet
             win.ignoresMouseEvents = (zone != .permissionPill)
             resetCursorIfNeeded()
@@ -87,12 +123,12 @@ final class CatCanvasView: NSView {
             if win.ignoresMouseEvents == shouldCapture {
                 win.ignoresMouseEvents = !shouldCapture
             }
-            if zone == .head || zone == .body {
+            if zone == .head || zone == .body || zone == .belly || ear {
                 if !isShowingOpenHand {
                     NSCursor.openHand.set()
                     isShowingOpenHand = true
                 }
-            } else if zone == .permissionPill {
+            } else if zone == .permissionPill || zone == .bowl || hover != nil {
                 NSCursor.pointingHand.set()
                 isShowingOpenHand = false
             } else {
@@ -114,11 +150,28 @@ final class CatCanvasView: NSView {
         let showPill = InputEngine.shared.status == .needsPermission
 
         if let pt = canvasPoint(fromScreenPoint: screenPt) {
-            let zone = CatRenderer.hitTest(point: pt, physics: physics, showPermissionPill: showPill)
+            let zone = CatRenderer.hitTest(point: pt, physics: physics, showPermissionPill: showPill,
+                                           showControls: CatSettings.shared.showControls)
             if zone == .permissionPill {
                 onRequestPermission?()
                 return
             }
+            if case let .control(action) = zone {
+                held = action
+                return
+            }
+            if zone == .bowl {
+                if event.clickCount >= 2 { onBowlTaken?() }
+                physics.clickBowl(take: event.clickCount >= 2)
+                return
+            }
+            if (physics.sleeping || physics.listening) && !event.modifierFlags.contains(.option) {
+                if !physics.ignoring && event.clickCount >= 2 && (zone == .head || zone == .leftEar || zone == .rightEar) {
+                    onWake?()
+                }
+                return
+            }
+            if physics.ignoring && !event.modifierFlags.contains(.option) { return }
         }
 
         isDragging = true
@@ -138,12 +191,20 @@ final class CatCanvasView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if let action = held {
+            held = nil
+            if let point = canvasPoint(fromScreenPoint: NSEvent.mouseLocation), CatRenderer.controlRect(action).contains(point) {
+                onAction?(action)
+            }
+            return
+        }
         guard isDragging, let win = window else { return }
         isDragging = false
         NSCursor.openHand.set()
         // Save position
         UserDefaults.standard.set(Double(win.frame.origin.x), forKey: "KuroCat.PosX")
-        UserDefaults.standard.set(Double(win.frame.origin.y), forKey: "KuroCat.PosY")
+        let baseY = win.frame.maxY - CatPhysics.canvasSize.height * CatSettings.shared.scale
+        UserDefaults.standard.set(Double(baseY), forKey: "KuroCat.PosY")
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -200,7 +261,7 @@ final class OverlayWindow: NSPanel {
         let oldFrame = frame
         let newSize = CGSize(
             width: CatPhysics.canvasSize.width * newScale,
-            height: CatPhysics.canvasSize.height * newScale
+            height: CatCanvasView.logicalHeight * newScale
         )
         // Anchor bottom-center so scaling feels grounded
         let newOrigin = CGPoint(
@@ -209,14 +270,22 @@ final class OverlayWindow: NSPanel {
         )
         setFrame(CGRect(origin: newOrigin, size: newSize), display: true)
         UserDefaults.standard.set(Double(newOrigin.x), forKey: "KuroCat.PosX")
-        UserDefaults.standard.set(Double(newOrigin.y), forKey: "KuroCat.PosY")
+        UserDefaults.standard.set(Double(newOrigin.y + newSize.height - CatPhysics.canvasSize.height * newScale), forKey: "KuroCat.PosY")
+    }
+
+    func toggleControls() {
+        CatSettings.shared.showControls.toggle()
+        let height = CatCanvasView.logicalHeight * CatSettings.shared.scale
+        let lowerEdge = screen?.visibleFrame.minY ?? frame.minY
+        let origin = CGPoint(x: frame.minX, y: max(lowerEdge, frame.maxY - height))
+        setFrame(CGRect(origin: origin, size: CGSize(width: frame.width, height: height)), display: true)
     }
 
     func resetPosition() {
         let origin = OverlayWindow.defaultOrigin(for: frame.size)
         setFrameOrigin(origin)
         UserDefaults.standard.set(Double(origin.x), forKey: "KuroCat.PosX")
-        UserDefaults.standard.set(Double(origin.y), forKey: "KuroCat.PosY")
+        UserDefaults.standard.set(Double(origin.y + frame.height - CatPhysics.canvasSize.height * CatSettings.shared.scale), forKey: "KuroCat.PosY")
     }
 
     private static func initialOrigin(for size: CGSize) -> CGPoint {

@@ -59,7 +59,7 @@ for coat in [CatCoatTheme.classicBlack,.siamese,.shorthair] {
   }
  }
 }
-for (name,coat) in [("shorthair",CatCoatTheme.shorthair),("orangeWhite",.orangeWhite)] {
+for (name,coat) in [("shorthair",CatCoatTheme.shorthair),("orangeWhite",.orangeWhite),("orca",.orcaCat)] {
  for state in 0..<8 {
   let c=frame(coat,.referenceHazel,state)
   precondition(pixels(c).filter{$0 != 0}.count>10000,"Empty action render")
@@ -68,7 +68,7 @@ for (name,coat) in [("shorthair",CatCoatTheme.shorthair),("orangeWhite",.orangeW
 }
 for (name,coat) in [("black",CatCoatTheme.classicBlack),("siamese",.siamese)] {save(frame(coat,coat == .siamese ? .siameseBlue : .neonChartreuse,0),name+".png")}
 save(frame(.shorthair,.softAmber,0),"shorthair-amber.png")
-print("PASS: \(n) legacy skin/eye/action frames pixel-identical to the pre-fix renderer; rendered 16 new skin/action frames including turned heads, typing/mouse/third paw, sleep, petting and hunting.")
+print("PASS: \(n) legacy skin/eye/action frames stayed pixel-identical; rendered coat and action poses.")
 
 for (name,coat) in [("shorthair",CatCoatTheme.shorthair),("orangeWhite",.orangeWhite)] {
  save(frame(coat,.softAmber,8),name+"-shoulder-after.png")
@@ -88,7 +88,7 @@ for coat in CatCoatTheme.allCases {
  }
 }
 precondition(oldFaceChanges > 0,"Shoulder fixture did not reproduce the old intrusion")
-print("PASS: reaching arms leave the face unchanged across all four skins; old fixture contaminated \(oldFaceChanges) pixels")
+print("PASS: reaching arms leave the face unchanged across all skins; old fixture contaminated \(oldFaceChanges) pixels")
 
 for coat in CatCoatTheme.allCases {
  for pose in 1...8 {
@@ -104,7 +104,22 @@ for coat in CatCoatTheme.allCases {
   }
  }
 }
-print("PASS: 32 extreme turn/tilt/squash poses preserve face pixels during mouse and typing actions")
+print("PASS: extreme head and body poses preserve face pixels while working")
+
+let reaction = CatPhysics()
+let stomach = CGPoint(x: 184, y: 204), keyboard = CGPoint(x: 180, y: 245)
+precondition(CurrentRenderer.hitTest(point: stomach, physics: reaction, showPermissionPill: false) == .belly)
+precondition(CurrentRenderer.hitTest(point: keyboard, physics: reaction, showPermissionPill: false) == .desk)
+reaction.setBellyHovered(true)
+precondition(reaction.angry)
+reaction.setBellyHovered(false)
+precondition(!reaction.angry)
+reaction.offerTreat()
+reaction.treatAge = 0.65
+precondition(CurrentRenderer.hitTest(point: CGPoint(x: 184, y: 246), physics: reaction, showPermissionPill: false) == .bowl)
+reaction.clickBowl(take: true)
+precondition(reaction.angry && reaction.ignoring && !reaction.bowlVisible && !reaction.canPerform(.treat))
+print("PASS: abdomen, desk and bowl interactions")
 
 precondition(EyeColorTheme.saved("淡金青绿（参考图）") == .referenceHazel)
 for eye in EyeColorTheme.allCases {precondition(EyeColorTheme.saved(eye.rawValue) == eye)}

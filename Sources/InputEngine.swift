@@ -328,6 +328,8 @@ final class InputEngine {
             if let key = PhysicalKey.fromCGKeyCode(keyCode) {
                 if !isRepeat {
                     setKeyState(key, isDown: true, fromHID: false)
+                } else {
+                    lastKeyActivityTime = CACurrentMediaTime()
                 }
             }
         case .keyUp:

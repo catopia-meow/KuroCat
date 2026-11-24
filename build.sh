@@ -12,6 +12,8 @@ echo "==> Building ${APP_NAME}.app..."
 mkdir -p "$MACOS_DIR" "$RES_DIR"
 
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
+VERSION="$(plutil -extract CFBundleShortVersionString raw "$CONTENTS/Info.plist")"
+plutil -replace CFBundleVersion -string "$VERSION" "$CONTENTS/Info.plist"
 
 if [ -f "$ROOT/Resources/AppIcon.icns" ]; then
     cp "$ROOT/Resources/AppIcon.icns" "$RES_DIR/AppIcon.icns"
@@ -91,6 +93,8 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/CatPhysics.swift"
     "$ROOT/Sources/CatRenderer.swift"
     "$ROOT/Sources/CoatPatterns.swift"
+    "$ROOT/Sources/SystemAudio.swift"
+    "$ROOT/Sources/DeskDetection.swift"
     "$ROOT/Sources/OverlayWindow.swift"
     "$ROOT/Sources/AppDelegate.swift"
     "$ROOT/Sources/main.swift"
@@ -104,6 +108,8 @@ COMMON_FLAGS=(
     -framework QuartzCore
     -framework IOKit
     -framework ApplicationServices
+    -framework AVFoundation
+    -framework ScreenCaptureKit
 )
 
 TMP_BIN_DIR="$(mktemp -d)"
@@ -127,7 +133,9 @@ if [ -n "$DEV_IDENTITY" ]; then
     codesign --force --deep --sign "$DEV_IDENTITY" "$APP_BUNDLE"
 else
     echo "==> Signing ad-hoc (no Apple Development cert found)"
-    codesign --force --deep --sign - --identifier "com.chanke.kurocat" "$APP_BUNDLE"
+    codesign --force --deep --sign - "$APP_BUNDLE"
 fi
+lipo -verify_arch arm64 x86_64 "$MACOS_DIR/$APP_NAME"
+codesign --verify --deep --strict "$APP_BUNDLE"
 
 echo "==> Built successfully: $APP_BUNDLE"
