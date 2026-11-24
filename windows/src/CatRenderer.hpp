@@ -12,10 +12,10 @@
 enum class CatHitZone {
     None,
     Head,
-    Body, LeftEar, RightEar, Belly
+    Body, LeftEar, RightEar, Belly, Desk
 };
 
-enum class PetControl { None, Treat, Sleep, Wake, Music, Auto, Keyboard, Tablet, KeyBubbles, MouseBubbles, Hide };
+enum class PetControl { None, Treat, Sleep, Wake, Music, Mode, KeyBubbles, MouseBubbles, Hide };
 
 class CatRenderer {
 public:
@@ -35,9 +35,10 @@ public:
 
     static bool controlEnabled(PetControl control, const CatPhysics& physics) {
         switch (control) {
-            case PetControl::Treat: return !physics.feeding();
-            case PetControl::Sleep: return !physics.resting();
-            case PetControl::Wake: return physics.resting();
+            case PetControl::Treat: return !physics.ignoring() && !physics.feeding();
+            case PetControl::Sleep: return !physics.ignoring() && !physics.resting();
+            case PetControl::Wake: return !physics.ignoring() && physics.resting();
+            case PetControl::Music: return !physics.ignoring() && !physics.resting();
             default: return true;
         }
     }
@@ -48,7 +49,7 @@ public:
         using namespace Gdiplus;
         const auto colors = keyboardColors(settings.keyboardTheme);
         GraphicsPath shell;
-        addRoundedRect(shell, 61.0f, controlTop - 3.0f, 237.0f, controlHeight + 7.0f, 6.0f);
+        addRoundedRect(shell, 61.0f, controlTop - 3.0f, 240.0f, controlHeight + 7.0f, 6.0f);
         SolidBrush deck(colors.base);
         g.FillPath(&deck, &shell);
 
@@ -74,14 +75,17 @@ public:
             Color symbol = active ? rgb(0x292324) : ink;
             auto state = g.Save();
             g.TranslateTransform(button.x + button.width * 0.5f, top + (controlHeight - 1.5f) * 0.5f);
-            drawControlSymbol(g, button.control, enabled ? symbol : blendColor(symbol, fill, 0.57f));
+            drawControlSymbol(g, button.control, enabled ? symbol : blendColor(symbol, fill, 0.57f),
+                              settings.deskMode());
             g.Restore(state);
             if (showTip && button.control == hover) described = &button;
         }
         if (described) {
             Font label(L"Microsoft YaHei UI", 10.2f, FontStyleRegular, UnitPixel);
+            const wchar_t* tipLabel = described->control == PetControl::Mode
+                ? modeTooltip(settings.deskMode()) : described->label;
             RectF measured;
-            g.MeasureString(described->label, -1, &label, PointF(0, 0), &measured);
+            g.MeasureString(tipLabel, -1, &label, PointF(0, 0), &measured);
             float width = measured.Width + 10.0f;
             float left = described->x + described->width * 0.5f - width * 0.5f;
             RectF bounds(left, controlTop - 26.0f, width, 20.0f);
@@ -92,41 +96,59 @@ public:
             StringFormat centered;
             centered.SetAlignment(StringAlignmentCenter);
             centered.SetLineAlignment(StringAlignmentCenter);
-            g.DrawString(described->label, -1, &label, bounds, &centered, &text);
+            g.DrawString(tipLabel, -1, &label, bounds, &centered, &text);
         }
     }
 
-    static CatHitZone hitTest(Pt p, const CatPhysics& physics, CatCoatTheme coat) {
+    static bool bowlAt(Pt point, const CatPhysics& physics) {
+        if (!physics.bowlVisible()) return false;
+        float show = bowlOpacity(physics.treatAge());
+        if (show < 0.12f) return false;
+        float x = point.x - CatPhysics::SeatAnchor.x, y = point.y - (219.0f - 3.0f * show);
+        if (y < 0.0f) return x * x / (22.0f * 22.0f) + y * y / 36.0f <= 1.0f;
+        return y <= 12.0f && std::abs(x) <= 22.0f - y * 0.36f;
+    }
+
+    static CatHitZone hitTest(Pt p, const CatPhysics& physics) {
         float cx = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
         float breath = physics.breathingOffset();
         Pt headCenter = { cx + physics.bodyTilt.value * 36.0f + physics.headYaw.value * 7.5f,
                           126.0f + physics.headOffsetY.value + physics.headPitch.value * 4.8f + breath * 1.1f };
 
-        if (coat == CatCoatTheme::OrcaCat) {
-            float dx = p.x - headCenter.x, dy = p.y - headCenter.y;
-            float tilt = physics.headTilt.value;
-            float x = dx * std::cos(tilt) + dy * std::sin(tilt);
-            float y = dy * std::cos(tilt) - dx * std::sin(tilt);
-            if (y < 0 && y > -64 && std::abs(x) < 68 &&
-                (x*x/(43*43) + y*y/(30*30) > 1.0f)) {
-                bool left = x < 0;
-                Gdiplus::GraphicsPath path;
-                buildEar(path, left, physics, coat);
-                if (path.IsVisible(x,y)) return left ? CatHitZone::LeftEar : CatHitZone::RightEar;
-            }
-            float bx = (p.x - cx) / 26.0f;
-            float by = (p.y - (CatPhysics::SeatAnchor.y - 22.0f)) / 19.0f;
-            if (bx*bx + by*by <= 1.0f) return CatHitZone::Belly;
+        float dx = p.x - headCenter.x, dy = p.y - headCenter.y;
+        float tilt = physics.headTilt.value;
+        float x = dx * std::cos(tilt) + dy * std::sin(tilt);
+        float y = dy * std::cos(tilt) - dx * std::sin(tilt);
+        if (y < 0 && y > -64 && std::abs(x) < 68 &&
+            x*x/(43*43) + y*y/(30*30) > 1.0f) {
+            bool left = x < 0;
+            Gdiplus::GraphicsPath path;
+            buildEar(path, left, physics);
+            if (path.IsVisible(x,y)) return left ? CatHitZone::LeftEar : CatHitZone::RightEar;
         }
+        float bx = (p.x - cx) / 26.0f;
+        float by = (p.y - (CatPhysics::SeatAnchor.y - 22.0f)) / 19.0f;
+        if (bx*bx + by*by <= 1.0f) return CatHitZone::Belly;
         float hdx = (p.x - headCenter.x) / 48.0f;
         float hdy = (p.y - headCenter.y) / 42.0f;
         if (hdx * hdx + hdy * hdy <= 1.0f) return CatHitZone::Head;
+
+        const Pt topLeft = KeyboardLayout::screenQuadPoint(-0.016f, -0.035f);
+        const Pt topRight = KeyboardLayout::screenQuadPoint(1.016f, -0.035f);
+        const Pt bottomLeft = KeyboardLayout::screenQuadPoint(-0.016f, 1.04f);
+        const Pt bottomRight = KeyboardLayout::screenQuadPoint(1.016f, 1.04f);
+        if (p.x >= bottomLeft.x - 1 && p.x <= bottomRight.x + 1) {
+            float u = std::clamp((p.x - topLeft.x) / (topRight.x - topLeft.x), 0.0f, 1.0f);
+            float top = topLeft.y + u * (topRight.y - topLeft.y);
+            float bottom = bottomLeft.y + u * (bottomRight.y - bottomLeft.y) + 5.5f;
+            if (p.y >= top - 1 && p.y <= bottom) return CatHitZone::Desk;
+        }
 
         float bdx = (p.x - cx) / 58.0f;
         float bdy = (p.y - 196.0f) / 56.0f;
         if (bdx * bdx + bdy * bdy <= 1.0f) return CatHitZone::Body;
 
-        if (p.x >= 58.0f && p.x <= 294.0f && p.y >= 232.0f && p.y <= 296.0f) return CatHitZone::Body;
+        if (p.x >= 58.0f && p.x <= 294.0f && p.y >= 232.0f && p.y <= 296.0f) return CatHitZone::Desk;
         return CatHitZone::None;
     }
 
@@ -170,28 +192,30 @@ public:
             drawKeyboard(g, physics, settings.keyboardTheme, settings.eyeTheme, settings.showKeyLegends);
         }
 
-        // 3. Tail
+        const float turn = physics.turnAway();
+        const float profile = std::sin(turn * 3.14159265f);
+        const float step = std::abs(std::sin(turn * 6.2831853f)) * profile;
+        const float backMix = CatPhysics::ease((turn - 0.43f) / 0.37f);
+        seatX -= profile * 11.0f;
+        headCenter.x += profile * 21.0f;
+        headCenter.y += profile * 1.5f - step * 3.0f;
         drawTail(g, seatX, seatY, physics, settings.coatTheme);
-
-        // 4. 3D-Projected Ears (behind crown silhouette)
         drawEarsLayer(g, headCenter, physics, settings.coatTheme);
-
-        // 5. Unified C1-Continuous Silhouette (+ 2.5D Siamese Mask)
-        drawUnifiedSilhouette(g, seatX, seatY, headCenter, breath, physics, settings.coatTheme);
-
-        // 6. Hind Foot (3rd simultaneous key easter egg!)
-        if (physics.hindFootActive.value > 0.03f) {
-            drawHindFoot(g, seatX, seatY, physics, settings.coatTheme);
+        drawUnifiedSilhouette(g, seatX, seatY, headCenter, breath, physics, settings.coatTheme, backMix);
+        if (turn == 0.0f) {
+            if (physics.hindFootActive.value > 0.03f) {
+                drawHindFoot(g, seatX, seatY, physics, settings.coatTheme);
+            }
+            drawHeadFeatures(g, headCenter, physics, settings.eyeTheme, settings.coatTheme);
+            bool holdingStylus = settings.tabletMode && physics.usingDesk();
+            if (holdingStylus) drawStylus(g, physics);
+            drawFrontPaws(g, seatX, seatY, breath, physics, settings.coatTheme, holdingStylus);
+        } else {
+            if (turn < 0.60f) drawHeadFeatures(g, headCenter, physics, settings.eyeTheme, settings.coatTheme);
+            drawTurningPaws(g, seatX, seatY, step, turn, settings.coatTheme, physics);
         }
 
-        // 7. 2.5D Eyes & Whiskers
-        drawHeadFeatures(g, headCenter, physics, settings.eyeTheme, settings.coatTheme);
-
-        // 8. Front Paws (Idle Sitting & Dynamic Reaching)
-        bool holdingStylus = settings.tabletMode && physics.usingDesk();
-        if (holdingStylus) drawStylus(g, physics);
-        drawFrontPaws(g, seatX, seatY, breath, physics, settings.coatTheme, holdingStylus);
-        if (physics.feeding() && physics.treatAge() < 2.86f) drawTreatBowl(g, physics.treatAge());
+        if (physics.bowlVisible()) drawTreatBowl(g, physics.treatAge());
 
         // 9. Floating Keycap Badges (keyboard + mouse clicks)
         if (!physics.floatingKeycaps.empty()) {
@@ -200,6 +224,7 @@ public:
 
         // 10. Subtle Petting Sparkles & Sleep Z
         drawSparkles(g, physics, settings.eyeTheme);
+        drawAngerMark(g, headCenter, physics.angerMarkProgress());
     }
 
 private:
@@ -209,25 +234,30 @@ private:
     static constexpr float controlTop = 312.0f;
     static constexpr float controlHeight = 22.0f;
     static constexpr ControlButton controlButtons[] = {
-        {PetControl::Treat, 64, 20, L"喂零食"}, {PetControl::Sleep, 87, 20, L"白天不熬猫"},
-        {PetControl::Wake, 110, 20, L"晚上猫熬人"}, {PetControl::Music, 133, 20, L"听音乐"},
-        {PetControl::Auto, 158, 20, L"自动识别"}, {PetControl::Keyboard, 181, 20, L"键盘模式"},
-        {PetControl::Tablet, 204, 20, L"数位板模式"}, {PetControl::KeyBubbles, 229, 20, L"按键气泡"},
-        {PetControl::MouseBubbles, 252, 20, L"鼠标气泡"}, {PetControl::Hide, 275, 20, L"隐藏控件"}
+        {PetControl::Treat, 64, 24, L"喂零食"}, {PetControl::Sleep, 94, 24, L"白天不熬猫"},
+        {PetControl::Wake, 124, 24, L"晚上猫熬人"}, {PetControl::Music, 154, 24, L"听音乐"},
+        {PetControl::Mode, 184, 24, L"切换模式"}, {PetControl::KeyBubbles, 214, 24, L"按键气泡"},
+        {PetControl::MouseBubbles, 244, 24, L"鼠标气泡"}, {PetControl::Hide, 274, 24, L"隐藏控件"}
     };
 
     static bool controlActive(PetControl control, const CatSettings& settings) {
         switch (control) {
-            case PetControl::Auto: return settings.autoDeskMode;
-            case PetControl::Keyboard: return !settings.autoDeskMode && !settings.tabletMode;
-            case PetControl::Tablet: return !settings.autoDeskMode && settings.tabletMode;
+            case PetControl::Mode: return true;
             case PetControl::KeyBubbles: return settings.showKeyBadges;
             case PetControl::MouseBubbles: return settings.showMouseBadges;
             default: return false;
         }
     }
 
-    static void drawControlSymbol(Gdiplus::Graphics& g, PetControl control, Gdiplus::Color color) {
+    static const wchar_t* modeTooltip(DeskMode mode) {
+        switch (mode) {
+            case DeskMode::Keyboard: return L"键鼠 · 点击切换";
+            case DeskMode::Tablet: return L"数位板 · 点击切换";
+            default: return L"自动检测 · 点击切换";
+        }
+    }
+
+    static void drawControlSymbol(Gdiplus::Graphics& g, PetControl control, Gdiplus::Color color, DeskMode mode) {
         using namespace Gdiplus;
         Pen pen(color, 1.25f);
         pen.SetStartCap(LineCapRound);
@@ -280,24 +310,23 @@ private:
                 rounded(-7.4f, -0.7f, 3.8f, 6.5f, 1.4f);
                 rounded(3.6f, -0.7f, 3.8f, 6.5f, 1.4f);
                 break;
-            case PetControl::Auto: {
-                g.DrawArc(&pen, -6.8f, -6.8f, 13.6f, 13.6f, 192.0f, 153.0f);
-                g.DrawArc(&pen, -6.8f, -6.8f, 13.6f, 13.6f, 12.0f, 153.0f);
-                const PointF top[]={{3.8f,-3.0f},{6.6f,-1.2f},{7.5f,-4.4f}};
-                const PointF bottom[]={{-3.8f,3.0f},{-6.6f,1.2f},{-7.5f,4.4f}};
-                g.DrawLines(&pen, top, 3);
-                g.DrawLines(&pen, bottom, 3);
-                break;
-            }
-            case PetControl::Keyboard:
-                rounded(-7.5f, -5.0f, 15.0f, 10.0f, 2.1f);
-                for (int i = -1; i <= 1; ++i) g.FillEllipse(&ink, i * 4.5f - 0.7f, -2.5f, 1.4f, 1.4f);
-                g.DrawLine(&pen, -4.0f, 2.0f, 4.0f, 2.0f);
-                break;
-            case PetControl::Tablet:
-                rounded(-7.7f, -4.8f, 15.4f, 10.5f, 2.0f);
-                g.DrawLine(&pen, -0.4f, 2.7f, 5.9f, -6.5f);
-                g.FillEllipse(&ink, -5.5f, -2.9f, 1.8f, 1.8f);
+            case PetControl::Mode:
+                if (mode == DeskMode::Keyboard) {
+                    rounded(-7.5f, -5.0f, 15.0f, 10.0f, 2.1f);
+                    for (int i = -1; i <= 1; ++i) g.FillEllipse(&ink, i * 4.5f - 0.7f, -2.5f, 1.4f, 1.4f);
+                    g.DrawLine(&pen, -4.0f, 2.0f, 4.0f, 2.0f);
+                } else if (mode == DeskMode::Tablet) {
+                    rounded(-7.7f, -4.8f, 15.4f, 10.5f, 2.0f);
+                    g.DrawLine(&pen, -0.4f, 2.7f, 5.9f, -6.5f);
+                    g.FillEllipse(&ink, -5.5f, -2.9f, 1.8f, 1.8f);
+                } else {
+                    g.DrawArc(&pen, -6.8f, -6.8f, 13.6f, 13.6f, 192.0f, 153.0f);
+                    g.DrawArc(&pen, -6.8f, -6.8f, 13.6f, 13.6f, 12.0f, 153.0f);
+                    const PointF top[]={{3.8f,-3.0f},{6.6f,-1.2f},{7.5f,-4.4f}};
+                    const PointF bottom[]={{-3.8f,3.0f},{-6.6f,1.2f},{-7.5f,4.4f}};
+                    g.DrawLines(&pen, top, 3);
+                    g.DrawLines(&pen, bottom, 3);
+                }
                 break;
             case PetControl::KeyBubbles:
                 bubble();
@@ -657,10 +686,33 @@ private:
         float wag2 = std::cos(p * 1.3f) * (6.0f + hunt * 4.5f);
         float huntDrop = hunt * 14.0f;
 
-        PointF root(seatX + 34.0f, seatY - 6.0f);
-        PointF c1(seatX + 64.0f, seatY + 2.0f + wag1 * 0.35f + huntDrop * 0.4f);
-        PointF c2(seatX + 66.0f + wag2 * 0.4f, seatY - 26.0f + wag1 * 0.7f + huntDrop);
-        PointF tip(seatX + 91.0f + wag2 * 0.5f, seatY - 30.0f + wag1 * 0.85f + huntDrop);
+        float turn = physics.turnAway();
+        float direction = std::cos(turn * 3.14159265f);
+        float curl = CatPhysics::ease((turn - 0.30f) / 0.23f) * (1.0f - CatPhysics::ease((turn - 0.61f) / 0.27f));
+        float tipDirection = std::cos(std::min(1.0f, turn + curl * 0.13f) * 3.14159265f);
+        PointF root(seatX + direction * 34.0f, seatY - 6.0f);
+        PointF c1(seatX + direction * 64.0f - curl * 31.0f, seatY + 2.0f + wag1 * 0.35f + huntDrop * 0.4f + curl * 19.0f);
+        PointF c2(seatX + tipDirection * (66.0f + wag2 * 0.4f) - curl * 26.0f, seatY - 26.0f + wag1 * 0.7f + huntDrop + curl * 13.0f);
+        PointF tip(seatX + tipDirection * (91.0f + wag2 * 0.5f) - curl * 16.0f, seatY - 30.0f + wag1 * 0.85f + huntDrop + curl * 14.0f);
+        float impatient = physics.tailImpatience();
+        if (impatient > 0.001f) {
+            float beat = std::fmod(physics.tailSlapTime(), 0.56f) / 0.56f;
+            auto lift = [](float phase) {
+                return CatPhysics::ease(phase / 0.43f) * (1.0f - CatPhysics::ease((phase - 0.43f) / 0.19f));
+            };
+            // The bend travels outward. The tip lands after the base and rebounds once.
+            float baseLift = lift(beat);
+            float middleLift = lift(beat - 0.08f);
+            float tipLift = lift(beat - 0.14f);
+            float rebound = CatPhysics::ease((beat - 0.76f) / 0.08f) * (1.0f - CatPhysics::ease((beat - 0.84f) / 0.13f));
+            PointF raisedBase(seatX + direction * (61.0f - 11.0f * baseLift), seatY + 7.0f - 26.0f * baseLift);
+            PointF raisedMiddle(seatX + direction * (77.0f - 24.0f * middleLift), seatY + 15.0f - 69.0f * middleLift);
+            PointF raisedTip(seatX + direction * (99.0f - 21.0f * tipLift - 5.0f * rebound),
+                             seatY + 11.0f - 59.0f * tipLift - 10.0f * rebound);
+            c1.X += (raisedBase.X - c1.X) * impatient; c1.Y += (raisedBase.Y - c1.Y) * impatient;
+            c2.X += (raisedMiddle.X - c2.X) * impatient; c2.Y += (raisedMiddle.Y - c2.Y) * impatient;
+            tip.X += (raisedTip.X - tip.X) * impatient; tip.Y += (raisedTip.Y - tip.Y) * impatient;
+        }
 
         Pen tailPen(earTailColor(coat), 11.0f);
         tailPen.SetStartCap(LineCapRound);
@@ -685,6 +737,33 @@ private:
         }
     }
 
+    static void drawAngerMark(Gdiplus::Graphics& g, Pt head, float progress) {
+        using namespace Gdiplus;
+        if (progress >= 1.0f) return;
+        float appear = CatPhysics::ease(progress / 0.18f);
+        float fade = 1.0f - CatPhysics::ease((progress - 0.65f) / 0.35f);
+        float size = 0.65f + 0.43f * appear + 0.12f * std::sin(3.14159265f * appear);
+        GraphicsState state = g.Save();
+        g.TranslateTransform(head.x + 44.0f + progress * 4.0f, head.y - 49.0f - progress * 13.0f);
+        g.RotateTransform(14.0f - progress * 10.0f);
+        g.ScaleTransform(size, size);
+        GraphicsPath mark;
+        for (float x : {-1.0f, 1.0f}) {
+            for (float y : {-1.0f, 1.0f}) {
+                mark.StartFigure();
+                addQuadBezier(mark, {x * 3.6f, y * 9.8f}, {x * 2.0f, y * 2.0f}, {x * 9.8f, y * 3.6f});
+            }
+        }
+        Pen edge(rgb(0xFFF1E5, static_cast<BYTE>(221.0f * appear * fade)), 4.7f);
+        Pen ink(rgb(0xCF373C, static_cast<BYTE>(255.0f * appear * fade)), 2.8f);
+        for (Pen* pen : {&edge, &ink}) {
+            pen->SetStartCap(LineCapRound);
+            pen->SetEndCap(LineCapRound);
+            g.DrawPath(pen, &mark);
+        }
+        g.Restore(state);
+    }
+
     // MARK: - 3D-Projected Ears
 
     static void drawEarsLayer(Gdiplus::Graphics& g, Pt center, const CatPhysics& physics, CatCoatTheme coat) {
@@ -696,20 +775,18 @@ private:
         SolidBrush brush(earTailColor(coat));
         for (bool left : {true, false}) {
             GraphicsPath ear;
-            buildEar(ear, left, physics, coat);
+            buildEar(ear, left, physics);
             g.FillPath(&brush, &ear);
         }
         g.Restore(st);
     }
 
-    static void buildEar(Gdiplus::GraphicsPath& ear, bool isLeft,
-                         const CatPhysics& physics, CatCoatTheme coat) {
+    static void buildEar(Gdiplus::GraphicsPath& ear, bool isLeft, const CatPhysics& physics) {
         float sign = isLeft ? -1.0f : 1.0f;
-        float yawRad = physics.headYaw.value * 0.50f;
+        float yawRad = physics.headYaw.value * 0.50f +
+                       std::sin(physics.turnAway() * 3.14159265f) * 1.07f;
         float pitchRad = physics.headPitch.value * 0.36f;
-        float angle = coat == CatCoatTheme::OrcaCat ? physics.orcaEarAngle(isLeft)
-                                                    : 0.06f + physics.earFold.value * 0.34f;
-        float foldAngle = sign * (angle - physics.earTwitch.value * 0.045f);
+        float foldAngle = sign * (physics.earAngle(isLeft) - physics.earTwitch.value * 0.045f);
         float tipDx = std::sin(foldAngle) * 32.0f;
         float tipDy = -std::cos(foldAngle) * 32.0f;
 
@@ -727,9 +804,14 @@ private:
 
     }
 
+    static float turnYaw(const CatPhysics& physics) {
+        return physics.headYaw.value * 0.50f + physics.turnAway() * 3.42f;
+    }
+
     // MARK: - Unified C1-Continuous Cat Silhouette (+ Siamese 2.5D Face Mask)
 
-    static void drawUnifiedSilhouette(Gdiplus::Graphics& g, float seatX, float seatY, Pt headCenter, float breath, const CatPhysics& physics, CatCoatTheme coat) {
+    static void drawUnifiedSilhouette(Gdiplus::Graphics& g, float seatX, float seatY, Pt headCenter, float breath,
+                                      const CatPhysics& physics, CatCoatTheme coat, float back = 0.0f) {
         using namespace Gdiplus;
         float yaw = physics.headYaw.value;
         float pitch = physics.headPitch.value;
@@ -743,7 +825,9 @@ private:
 
         float cB = std::cos(bTilt), sB = std::sin(bTilt);
         float sy = physics.bodySquash.value;
-        float sx = 1.0f + (1.0f - sy) * 0.55f;
+        float turn = physics.turnAway();
+        float profile = std::sin(turn * 3.14159265f);
+        float sx = (1.0f + (1.0f - sy) * 0.55f) * (1.0f - profile * 0.13f);
         auto B = [&](float lx, float ly) -> PointF {
             float rx = lx * sx, ry = ly * sy;
             return PointF(seatX + rx * cB - ry * sB, seatY + rx * sB + ry * cB);
@@ -751,15 +835,15 @@ private:
 
         float cheekShift = yaw * 3.0f;
         float crownDrop = pitch * 2.0f;
-        float leftCheekX = -42.5f + cheekShift * 0.4f;
-        float rightCheekX = 42.5f + cheekShift * 0.4f;
+        float leftCheekX = -42.5f + cheekShift * 0.4f + profile * 6.0f;
+        float rightCheekX = 42.5f + cheekShift * 0.4f - profile * 10.0f;
 
         PointF crown  = H(cheekShift * 0.2f, -30.0f + crownDrop);
         PointF rCheek = H(rightCheekX, 5.0f);
-        PointF rHip   = B(49.0f, -14.0f);
+        PointF rHip   = B(49.0f + profile * 3.0f, -14.0f);
         PointF rBot   = B(24.0f, 12.0f);
         PointF lBot   = B(-24.0f, 12.0f);
-        PointF lHip   = B(-49.0f, -14.0f);
+        PointF lHip   = B(-49.0f, -14.0f - profile * 3.0f);
         PointF lCheek = H(leftCheekX, 5.0f);
 
         GraphicsPath path;
@@ -772,36 +856,58 @@ private:
         path.AddBezier(lCheek, H(leftCheekX - 1.5f, -14.0f), H(-26.0f + cheekShift * 0.3f, -30.0f + crownDrop), crown);
         path.CloseFigure();
 
-        if (coat != CatCoatTheme::Siamese) {
+        if (back > 0.0f) {
+            Color fur = coat == CatCoatTheme::Siamese ? blendColor(siameseCream(), siameseLatte(), back)
+                                                     : bodyColor(coat);
+            Color shoulder = blendColor(fur, rgb(0xA7A2A0), 0.14f);
+            LinearGradientBrush backFur(crown, B(0, 12), shoulder, fur);
+            g.FillPath(&backFur, &path);
+            if (coat == CatCoatTheme::Shorthair) {
+                Pen stripe(rgb(0x62605F, static_cast<BYTE>(145 * back)), 2.7f);
+                stripe.SetStartCap(LineCapRound);
+                stripe.SetEndCap(LineCapRound);
+                for (float y : {-64.0f, -47.0f, -28.0f}) {
+                    g.DrawBezier(&stripe, B(-27, y), B(-12, y - 7), B(12, y - 7), B(27, y));
+                }
+            }
+        }
+
+        if (back == 0.0f && coat != CatCoatTheme::Siamese) {
             SolidBrush b(bodyColor(coat));
             g.FillPath(&b, &path);
             if (patterned(coat)) {
                 GraphicsState cs = g.Save(); g.SetClip(&path, CombineModeIntersect);
                 drawCoatMarks(g, seatX, seatY, headCenter, physics, coat); g.Restore(cs);
-            } else if (coat == CatCoatTheme::OrcaCat) {
-                // Anchor the top of the bib to the moving chin and the taper to the breast.
-                auto chin = [&](float x, float y) {
-                    Pt p = projectHead3D(x, y, 22.0f, yaw * 0.50f, pitch * 0.36f);
-                    return H(p.x, p.y);
-                };
-                GraphicsPath bib;
-                bib.AddBezier(chin(-27, 24), chin(-24, 17), chin(-16, 17), chin(0, 17));
-                bib.AddBezier(chin(0, 17), chin(16, 17), chin(24, 17), chin(27, 24));
-                bib.AddBezier(chin(27, 24), chin(31, 30), B(30, -47), B(22, -32));
-                bib.AddBezier(B(22, -32), B(18, -24), B(10, -19), B(5, -15));
-                bib.AddLine(B(5, -15), B(5, -19));
-                bib.AddBezier(B(5, -19), B(2, -14), B(0, -12), B(-2, -10));
-                bib.AddLine(B(-2, -10), B(-3, -16));
-                bib.AddBezier(B(-3, -16), B(-17, -23), B(-28, -29), B(-29, -52));
-                bib.AddBezier(B(-29, -52), B(-31, -66), chin(-31, 31), chin(-27, 24));
-                bib.CloseFigure();
-                SolidBrush white(pawColor(coat));
-                GraphicsState clip = g.Save();
-                g.SetClip(&path, CombineModeIntersect);
-                g.FillPath(&white, &bib);
-                g.Restore(clip);
             }
-        } else {
+        }
+        if (coat == CatCoatTheme::OrcaCat && turn < 0.63f) {
+            float rotation = turn / 0.63f * 1.57079633f;
+            float width = std::cos(rotation), side = std::sin(rotation);
+            // The marking wraps around the chest and stays attached to the chin at profile.
+            auto chest = [&](float x, float y) { return B(x * width + 39.0f * side, y); };
+            auto chin = [&](float x, float y) {
+                Pt p = projectHead3D(x, y, 22.0f, yaw * 0.50f, pitch * 0.36f);
+                return H(p.x * width + 29.0f * side, p.y);
+            };
+            GraphicsPath bib;
+            bib.AddBezier(chin(-27, 24), chin(-24, 17), chin(-16, 17), chin(0, 17));
+            bib.AddBezier(chin(0, 17), chin(16, 17), chin(24, 17), chin(27, 24));
+            bib.AddBezier(chin(27, 24), chin(31, 30), chest(30, -47), chest(22, -32));
+            bib.AddBezier(chest(22, -32), chest(18, -24), chest(10, -19), chest(5, -15));
+            bib.AddLine(chest(5, -15), chest(5, -19));
+            bib.AddBezier(chest(5, -19), chest(2, -14), chest(0, -12), chest(-2, -10));
+            bib.AddLine(chest(-2, -10), chest(-3, -16));
+            bib.AddBezier(chest(-3, -16), chest(-17, -23), chest(-28, -29), chest(-29, -52));
+            bib.AddBezier(chest(-29, -52), chest(-31, -66), chin(-31, 31), chin(-27, 24));
+            bib.CloseFigure();
+            float coverage = CatPhysics::ease((0.63f - turn) / 0.08f);
+            Color whiteFur = pawColor(coat);
+            SolidBrush white(Color(static_cast<BYTE>(255 * coverage), whiteFur.GetR(), whiteFur.GetG(), whiteFur.GetB()));
+            GraphicsState clip = g.Save();
+            g.SetClip(&path, CombineModeIntersect);
+            g.FillPath(&white, &bib);
+            g.Restore(clip);
+        } else if (coat == CatCoatTheme::Siamese && back == 0.0f) {
             GraphicsState cs = g.Save();
             g.SetClip(&path, CombineModeIntersect);
 
@@ -818,7 +924,7 @@ private:
             g.FillPath(&bodyGrad, &path);
 
             // 2.5D Rotating Seal-Point "挖煤" Face Mask!
-            float yawRad = yaw * 0.50f;
+            float yawRad = turnYaw(physics);
             float pitchRad = pitch * 0.36f;
             Pt maskC = projectHead3D(0.0f, 2.5f, 27.0f, yawRad, pitchRad);
             float maskSX = std::max(0.76f, std::cos(yawRad * 0.7f)) * 1.18f;
@@ -845,6 +951,8 @@ private:
             Pen outPen(siameseOutline(), 1.5f);
             g.DrawPath(&outPen, &path);
         }
+
+        if (physics.turnAway() > 0.0f) return;
 
         // Tucked hind paws at bottom
         GraphicsState ps = g.Save();
@@ -884,13 +992,18 @@ private:
         g.TranslateTransform(center.x, center.y);
         g.RotateTransform(physics.headTilt.value * RadToDeg);
 
-        float yawRad = physics.headYaw.value * 0.50f;
+        float yawRad = turnYaw(physics);
         float pitchRad = physics.headPitch.value * 0.36f;
+        if (physics.turnAway() > 0.0f) {
+            GraphicsPath skull;
+            skull.AddEllipse(-40.0f, -30.0f, 73.5f, 76.0f);
+            g.SetClip(&skull, CombineModeIntersect);
+        }
 
-        if (coat == CatCoatTheme::OrcaCat) drawOrcaMuzzle(g, yawRad, pitchRad);
+        if (coat == CatCoatTheme::OrcaCat && yawRad < 1.33f) drawOrcaMuzzle(g, yawRad, pitchRad);
         drawEye3D(g, true, yawRad, pitchRad, physics, eyeTheme, coat);
         drawEye3D(g, false, yawRad, pitchRad, physics, eyeTheme, coat);
-        drawWhiskers3D(g, yawRad, pitchRad, physics, coat);
+        if (yawRad < 1.12f) drawWhiskers3D(g, yawRad, pitchRad, physics, coat);
         if (physics.headphones() > 0.015f) drawHeadphones(g, physics.headphones(), yawRad, eyeTheme);
         g.Restore(st);
     }
@@ -966,14 +1079,16 @@ private:
         Pt proj = projectHead3D(sign * 17.2f, -2.0f, 27.5f, yawRad, pitchRad);
 
         float eyeNormal = yawRad + sign * 0.34f;
-        float foreX = std::clamp(std::cos(eyeNormal) / std::cos(0.34f), 0.64f, 1.06f);
+        if (physics.turnAway() >= 0.57f || std::cos(eyeNormal) <= 0.0f) return;
+        float foreX = std::clamp(std::cos(eyeNormal) / std::cos(0.34f), physics.turnAway() > 0.0f ? 0.05f : 0.64f, 1.06f);
         float foreY = std::clamp(std::cos(pitchRad * 0.85f), 0.78f, 1.03f);
 
         GraphicsState st = g.Save();
         g.TranslateTransform(proj.x, proj.y);
         g.ScaleTransform(foreX, foreY);
 
-        float relaxed = std::max({physics.sleepiness, physics.washLift(), physics.musicEyes()});
+        bool angry = physics.angry();
+        float relaxed = angry ? 0.0f : std::max({physics.sleepiness, physics.washLift(), physics.musicEyes()});
         if (relaxed > 0.68f) {
             GraphicsPath lid;
             addQuadBezier(lid, {-9.5f, 2.0f}, {0.0f, 8.4f}, {9.5f, 2.0f});
@@ -986,7 +1101,7 @@ private:
         }
 
         // Mode 1: Happy closed glowing curved line eyes (petting head!)
-        if (physics.isHappyClosedEyes()) {
+        if (!angry && physics.isHappyClosedEyes()) {
             GraphicsPath hp;
             addQuadBezier(hp, {-11.5f, 1.0f}, {sign * 1.5f, 3.4f}, {11.5f, 1.0f});
             Pen p(eyeCol, 2.6f);
@@ -997,7 +1112,7 @@ private:
         }
 
         // Mode 2: Blissful half-squint glowing slits (petting body!)
-        if (physics.isBlissfulSquint()) {
+        if (!angry && physics.isBlissfulSquint()) {
             GraphicsPath sp;
             addQuadBezier(sp, {-11.5f, -0.5f}, {0.0f, 0.6f}, {11.5f, -0.5f});
             addQuadBezier(sp, {11.5f, -0.5f}, {0.0f, 4.8f}, {-11.5f, -0.5f});
@@ -1008,7 +1123,7 @@ private:
             return;
         }
 
-        float hunt = std::clamp(physics.huntIntensity.value, 0.0f, 1.0f);
+        float hunt = angry ? 0.0f : std::clamp(physics.huntIntensity.value, 0.0f, 1.0f);
         g.RotateTransform(sign * (0.06f * (1.0f - hunt * 0.6f)) * RadToDeg);
 
         float rx = 12.0f + hunt * 1.1f;
@@ -1019,7 +1134,7 @@ private:
         GraphicsState cs = g.Save();
         g.SetClip(&eyeClip, CombineModeIntersect);
         // Leave covered pixels untouched so the underlying face remains seamless.
-        float closure = std::clamp(physics.effectiveEyeClosure(), 0.0f, 1.0f);
+        float closure = angry ? 0.0f : std::clamp(physics.effectiveEyeClosure(), 0.0f, 1.0f);
         if (closure >= 1.0f) {
             g.Restore(cs);
             g.Restore(st);
@@ -1028,6 +1143,12 @@ private:
         RectF opening(-rx - 2.0f, -ry + 2.0f * ry * closure,
                       2.0f * rx + 4.0f, 2.0f * ry * (1.0f - closure));
         if (closure > 0.0f) g.SetClip(opening, CombineModeIntersect);
+        if (angry) {
+            GraphicsPath frown;
+            addQuadPoly(frown, {-rx - 2.0f, -2.0f + sign * 6.6f}, {rx + 2.0f, -2.0f - sign * 6.6f},
+                        {rx + 2.0f, ry + 2.0f}, {-rx - 2.0f, ry + 2.0f});
+            g.SetClip(&frown, CombineModeIntersect);
+        }
 
         SolidBrush irisBrush(eyeCol);
         g.FillRectangle(&irisBrush, -rx - 1.0f, -ry - 1.0f, rx * 2.0f + 2.0f, ry * 2.0f + 2.0f);
@@ -1148,9 +1269,13 @@ private:
         g.DrawLine(&nib,t.x,t.y,t.x+2.6f,t.y-5.f);
     }
 
+    static float bowlOpacity(float age) {
+        return CatPhysics::ease(age / 0.28f) * CatPhysics::ease((CatPhysics::BowlEnd - age) / 0.43f);
+    }
+
     static void drawTreatBowl(Gdiplus::Graphics& g, float age) {
         using namespace Gdiplus;
-        float show = CatPhysics::ease(age / 0.28f) * CatPhysics::ease((2.86f - age) / 0.43f);
+        float show = bowlOpacity(age);
         auto tint = [show](unsigned int hex, BYTE alpha = 255) { return rgb(hex, (BYTE)(alpha * show)); };
         GraphicsState state = g.Save();
         g.TranslateTransform(CatPhysics::SeatAnchor.x, 216.0f + 3.0f * (1.0f - show));
@@ -1176,6 +1301,35 @@ private:
             g.FillEllipse(&treat, x - 3.25f, y - 2.2f, 6.5f, 4.4f);
         }
         g.Restore(state);
+    }
+
+    static void drawTurningPaws(Gdiplus::Graphics& g, float seatX, float seatY, float step,
+                                float turn, CatCoatTheme coat, const CatPhysics& physics) {
+        using namespace Gdiplus;
+        if (turn >= 0.61f) return;
+        float weight = CatPhysics::ease(turn / 0.22f);
+        float arc = std::sin(turn * 3.14159265f);
+        float nearVisibility = 1.0f - CatPhysics::ease((turn - 0.43f) / 0.18f);
+        float farVisibility = 1.0f - CatPhysics::ease((turn - 0.24f) / 0.23f);
+        Pt nearRest = physics.leftPaw.point(), farRest = physics.rightPaw.point();
+        Pt nearPaw = {nearRest.x + (seatX - 22.0f + arc * 35.0f - nearRest.x) * weight,
+                      nearRest.y + (seatY + 9.0f - step * 8.0f - (1.0f - nearVisibility) * 6.0f - nearRest.y) * weight};
+        Pt farPaw = {farRest.x + (seatX + 26.0f + arc * 14.0f - farRest.x) * weight,
+                     farRest.y + (seatY + 7.0f - (arc - step) * 8.0f - (1.0f - farVisibility) * 5.0f - farRest.y) * weight};
+        Pt shoulder = {seatX - 14.0f + arc * 48.0f, seatY - 38.0f};
+        if (nearVisibility > 0.02f) {
+            Pt middle = {(shoulder.x + nearPaw.x) * 0.5f - 3.0f, (shoulder.y + nearPaw.y) * 0.5f};
+            float chestFur = 0.65f * nearVisibility * (1.0f - CatPhysics::ease((turn - 0.28f) / 0.16f));
+            drawLimb(g, shoulder, middle, nearPaw, 16.0f * nearVisibility, 12.0f * nearVisibility,
+                     Limb::LeftForeleg, 0.60f * nearVisibility, coat, chestFur);
+        }
+        SolidBrush fur(pawColor(coat));
+        g.FillEllipse(&fur, nearPaw.x - 8.0f * nearVisibility, nearPaw.y - 4.0f * nearVisibility,
+                      16.0f * nearVisibility, 9.0f * nearVisibility);
+        if (farVisibility > 0.0f) {
+            g.FillEllipse(&fur, farPaw.x - 7.0f * farVisibility, farPaw.y - 4.0f * farVisibility,
+                          14.0f * farVisibility, 9.0f * farVisibility);
+        }
     }
 
     static void drawFrontPaws(Gdiplus::Graphics& g, float seatX, float seatY, float breath, const CatPhysics& physics, CatCoatTheme coat, bool tabletMode) {

@@ -291,6 +291,7 @@ final class CatPhysics {
     private var idleRestSince: CFTimeInterval?
     private var typingSince: CFTimeInterval?
     private(set) var tailImpatience: CGFloat = 0
+    private(set) var tailSlapTime: CGFloat = 0
     private var bellyHovered = false
     private var routineStarted = CACurrentMediaTime()
     private var lastHour: Date?
@@ -303,6 +304,7 @@ final class CatPhysics {
     private var ignoringUntil: CFTimeInterval = 0
     private(set) var turn: CGFloat = 0
     private var turnProgress: CGFloat = 0
+    private var turnScoldTime: CGFloat = -2
     private var leftEar = Spring1D(0)
     private var rightEar = Spring1D(0)
     private var lastEarTouch: CGFloat = -10
@@ -327,6 +329,12 @@ final class CatPhysics {
     var feeding: Bool { treatAge >= 0 }
     var bowlVisible: Bool { feeding && treatAge < Self.bowlEnd }
     var angry: Bool { (bellyHovered && usingDesk) || time < angryUntil }
+    var angerMarkProgress: CGFloat {
+        let turnAge = time - turnScoldTime
+        if turnAge < 1.48 { return turnAge / 1.48 }
+        if tailImpatience > 0.10 { return tailSlapTime.truncatingRemainder(dividingBy: 1.68) / 0.90 }
+        return 1
+    }
     var ignoring: Bool { CACurrentMediaTime() < ignoringUntil }
     var usingDesk: Bool { !sleeping && !feeding && !listening && !ignoring && turn == 0 }
     var washLift: CGFloat {
@@ -437,6 +445,8 @@ final class CatPhysics {
         guard bowlVisible, !ignoring else { return }
         flattenEars()
         if take {
+            turnScoldTime = time
+            airplaneUntil = time + 0.91
             treatAge = -1
             idleRestSince = nil
             turnStarts = CACurrentMediaTime() + 0.58
@@ -1047,6 +1057,7 @@ final class CatPhysics {
         }
         let impatient = typingSince.map { now - $0 > 60 } == true
         tailImpatience += ((impatient ? 1 : 0) - tailImpatience) * min(1, dt * 6)
+        tailSlapTime = impatient || tailImpatience > 0.01 ? tailSlapTime + dt : 0
         let kpmBoost = desk ? min(2.4, CGFloat(engine.currentKPM) / 160.0) : 0
         let petBoost = max(petHeadIntensity, petBodyIntensity) * 1.4
         let huntBoost = hunt * 2.8

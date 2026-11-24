@@ -38,6 +38,16 @@ func frame(_ coat: CatCoatTheme,_ eye:EyeColorTheme,_ state:Int,_ legacy:Bool = 
  case 5:p.petHeadIntensity=0.8;p.earFold.value=0.6
  case 6:p.petBodyIntensity=0.8
  case 7:p.huntIntensity.value=1;p.pupilScale.value=1.12;p.eyeGaze.x.value=0.7;p.eyeGaze.y.value = -0.4
+ case 10: p.turn = 1
+ case 11:
+  p.tailImpatience = 1
+  p.tailSlapTime = 0.32
+ case 12:
+  p.offerTreat()
+  p.treatAge = 0.65
+  p.clickBowl(take: true)
+  p.time = 0.77
+  p.turn = 0.25
  default:break
  }
  let s=RenderSettings.shared;s.coatTheme=coat;s.eyeTheme=eye
@@ -120,6 +130,30 @@ precondition(CurrentRenderer.hitTest(point: CGPoint(x: 184, y: 246), physics: re
 reaction.clickBowl(take: true)
 precondition(reaction.angry && reaction.ignoring && !reaction.bowlVisible && !reaction.canPerform(.treat))
 print("PASS: abdomen, desk and bowl interactions")
+
+let front = pixels(frame(.orcaCat, .referenceHazel, 0))
+let rear = pixels(frame(.orcaCat, .referenceHazel, 10))
+var frontPawPixels = 0
+for y in 440..<474 {
+ for x in 280..<450 {
+  let i = (y * 720 + x) * 4
+  if front[i] > 235 && front[i + 1] > 235 && front[i + 2] > 230 { frontPawPixels += 1 }
+  precondition(rear[i] <= 235 || rear[i + 1] <= 235 || rear[i + 2] <= 230, "Paw visible in the rear pose")
+ }
+}
+precondition(frontPawPixels > 40, "Paw fixture misses the front paws")
+for state in [11, 12] {
+ let action = pixels(frame(.orcaCat, .referenceHazel, state))
+ var markPixels = 0
+ for y in 88..<178 {
+  for x in 406..<530 {
+   let i = (y * 720 + x) * 4
+   if action[i] > 160 && action[i + 1] < 95 && action[i + 2] < 95 { markPixels += 1 }
+  }
+ }
+ precondition(markPixels > 20, "Anger mark missing in pose \(state)")
+}
+print("PASS: no paws on the rear silhouette; both actions draw the anger mark")
 
 precondition(EyeColorTheme.saved("淡金青绿（参考图）") == .referenceHazel)
 for eye in EyeColorTheme.allCases {precondition(EyeColorTheme.saved(eye.rawValue) == eye)}

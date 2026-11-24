@@ -92,6 +92,8 @@ enum MenuCmd : UINT {
     CMD_MUSIC
 };
 
+enum class ClickTarget { None, RestingHead, Bowl };
+
 struct AppState {
     HWND hwnd = nullptr;
     HWND menuOwnerHwnd = nullptr; // Non-NOACTIVATE helper window so TrackPopupMenu from tray NEVER fails!
@@ -110,6 +112,9 @@ struct AppState {
     double controlHoverSince = 0.0;
     POINT dragStartCursor = {};
     POINT dragStartWinOrigin = {};
+    ClickTarget previousClick = ClickTarget::None;
+    POINT previousClickPoint = {};
+    DWORD previousClickTime = 0;
     bool hasLastHover = false;
     Pt lastHoverCanvas = {};
 
@@ -127,6 +132,9 @@ struct AppState {
     int demoStepIdx = 0;
 
     int openedUpdateRelease = 0;
+    int observedMealHour = 0;
+    bool mealPending = false;
+    bool mealWaitsForIdle = false;
 
     // Robustness against games, Win+L, sleep and display changes
     double nextFrameTime = 0.0;
@@ -471,12 +479,27 @@ void recoverAfterSystemEvent(AppState& app) {
     app.pendingTopmostTime = now + 1.5; // some games re-assert topmost shortly after a mode switch
 }
 
-/// Once per second: watchdog + game helpers.
+bool hourlyMealDue(const SYSTEMTIME& local, int& observedHour) {
+    // The local date keeps midnight and the same clock hour on different days distinct.
+    int hour = (((local.wYear * 12 + local.wMonth) * 31 + local.wDay) * 24) + local.wHour;
+    if (hour == observedHour) return false;
+    bool crossedHour = observedHour != 0;
+    observedHour = hour;
+    return crossedHour && local.wMinute == 0;
+}
+
+/// Once per second: meals, watchdog and game helpers.
 void housekeeping(AppState& app) {
     double now = nowSeconds();
     if (now < app.nextHousekeepingTime) return;
     app.nextHousekeepingTime = now + 1.0;
     if (!app.hwnd) return;
+    SYSTEMTIME local{};
+    GetLocalTime(&local);
+    if (hourlyMealDue(local, app.observedMealHour) && !app.physics.feeding()) {
+        app.mealPending = true;
+        app.mealWaitsForIdle = app.input.activelyUsed(now);
+    }
 
     // Rendering stalled for >2s while visible (e.g. the layered window lost its surface): self-heal.
     if (app.isVisible && app.lastRenderTime > 0.0 && now - app.lastRenderTime > 2.0) {
@@ -541,9 +564,22 @@ bool mouseIsUnlocked(const AppState& app) {
     return !app.settings.fullClickThrough || (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
 }
 
+bool isDoubleClick(AppState& app, ClickTarget target, POINT point, UINT message) {
+    DWORD now = static_cast<DWORD>(GetMessageTime());
+    bool sameTarget = app.previousClick == target && now - app.previousClickTime <= GetDoubleClickTime() &&
+        std::abs(point.x - app.previousClickPoint.x) <= GetSystemMetrics(SM_CXDOUBLECLK) / 2 &&
+        std::abs(point.y - app.previousClickPoint.y) <= GetSystemMetrics(SM_CYDOUBLECLK) / 2;
+    bool doubleClick = message == WM_LBUTTONDBLCLK || sameTarget;
+    app.previousClick = doubleClick ? ClickTarget::None : target;
+    app.previousClickPoint = point;
+    app.previousClickTime = now;
+    return doubleClick;
+}
+
 void runCommand(AppState& app, UINT cmd);
 
 void showContextMenu(AppState& app, POINT screenPt) {
+    app.previousClick = ClickTarget::None;
     HMENU menu = CreatePopupMenu();
 
     // Status & live stats header
@@ -562,9 +598,11 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     AppendMenuW(menu, MF_STRING, CMD_TOGGLE_VISIBLE, app.isVisible ? L"\u9690\u85CF\u5C0F\u732B" : L"\u663E\u793A\u5C0F\u732B");
-    AppendMenuW(menu, MF_STRING, CMD_TOGGLE_SLEEP, app.physics.resting() ? L"晚上猫熬人" : L"白天不熬猫");
-    AppendMenuW(menu, MF_STRING | (app.physics.feeding() ? MF_GRAYED : 0), CMD_TREAT, L"喂零食");
-    AppendMenuW(menu, MF_STRING | (app.physics.listening() ? MF_CHECKED : 0), CMD_MUSIC, L"听音乐");
+    UINT actionFlags = app.physics.ignoring() ? MF_GRAYED : 0;
+    AppendMenuW(menu, MF_STRING | actionFlags, CMD_TOGGLE_SLEEP, app.physics.resting() ? L"晚上猫熬人" : L"白天不熬猫");
+    AppendMenuW(menu, MF_STRING | actionFlags | (app.physics.feeding() ? MF_GRAYED : 0), CMD_TREAT, L"喂零食");
+    UINT musicFlags = actionFlags | (app.physics.listening() ? MF_CHECKED : 0) | (app.physics.resting() ? MF_GRAYED : 0);
+    AppendMenuW(menu, MF_STRING | musicFlags, CMD_MUSIC, L"听音乐");
     AppendMenuW(menu, MF_STRING, CMD_TOGGLE_CONTROLS, app.settings.showControls ? L"隐藏控件" : L"显示控件");
     AppendMenuW(menu, MF_STRING | (app.settings.fullClickThrough ? MF_CHECKED : 0), CMD_TOGGLE_CLICKTHROUGH, L"\u5B8C\u5168\u9F20\u6807\u7A7F\u900F (Ctrl+Alt+Shift+P / \u6309\u4F4FAlt\u53EF\u53F3\u952E)");
     AppendMenuW(menu, MF_STRING | (app.settings.alwaysOnTop ? MF_CHECKED : 0), CMD_TOGGLE_TOPMOST, L"\u7A97\u53E3\u7F6E\u9876\u663E\u793A");
@@ -596,7 +634,7 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_STRING | (app.settings.autoDeskMode ? MF_CHECKED : 0),
                 CMD_AUTO_DESK, L"自动识别绘画窗口和文字输入");
     AppendMenuW(menu, MF_STRING | (!app.settings.autoDeskMode && !app.settings.tabletMode ? MF_CHECKED : 0),
-                CMD_KEYBOARD_MODE, L"键盘模式");
+                CMD_KEYBOARD_MODE, L"键鼠模式");
     AppendMenuW(menu, MF_STRING | (!app.settings.autoDeskMode && app.settings.tabletMode ? MF_CHECKED : 0),
                 CMD_TABLET_MODE, L"数位板模式");
     if (app.settings.tabletMode)
@@ -630,7 +668,7 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)scaleMenu, L"\u5C3A\u5BF8\u5927\u5C0F");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, CMD_DEMO_BURST, L"\u6F14\u793A\u6253\u5B57\u52A8\u753B");
+    AppendMenuW(menu, MF_STRING | actionFlags, CMD_DEMO_BURST, L"\u6F14\u793A\u6253\u5B57\u52A8\u753B");
     AppendMenuW(menu, MF_STRING, CMD_RESET_POS, L"\u91CD\u7F6E\u4F4D\u7F6E\u5230\u53F3\u4E0B\u89D2");
     std::wstring checkLabel = L"检查更新（虎鲸猫 " + std::to_wstring(ORCA_RELEASE) + L"）";
     AppendMenuW(menu, MF_STRING, CMD_CHECK_UPDATE, checkLabel.c_str());
@@ -650,7 +688,32 @@ void stopListening(AppState& app) {
     app.physics.listenToMusic(false);
 }
 
+bool startListening(AppState& app) {
+    if (!app.audioBeat.start()) return false;
+    app.physics.listenToMusic(true);
+    return true;
+}
+
+void resumeFromIdleInput(AppState& app) {
+    if (!app.physics.canResumeFromInput(app.input.lastActivity())) return;
+    if (app.physics.listening()) stopListening(app);
+    app.physics.wakeUp();
+}
+
+bool breakIsMusic(WORD hour, bool preferred) {
+    bool daytime = hour >= 6 && hour < 18;
+    return daytime != preferred;
+}
+
+bool mealReady(bool pending, bool waitsForIdle, const InputEngine& input, double now) {
+    return pending && !input.activelyUsed(now) &&
+           (!waitsForIdle || now - input.lastActivity() >= CatPhysics::IdleSeconds);
+}
+
 void runCommand(AppState& app, UINT cmd) {
+    if (app.physics.ignoring() &&
+        (cmd == CMD_TOGGLE_SLEEP || cmd == CMD_TREAT || cmd == CMD_MUSIC || cmd == CMD_DEMO_BURST)) return;
+
     switch (cmd) {
         case CMD_TOGGLE_SLEEP:
         case CMD_TREAT:
@@ -670,10 +733,10 @@ void runCommand(AppState& app, UINT cmd) {
     const auto previousEyes = app.settings.eyeTheme;
     switch (cmd) {
         case CMD_MUSIC:
+            if (app.physics.resting()) break;
             if (app.physics.listening()) {
                 stopListening(app);
-            } else if (app.audioBeat.start()) {
-                app.physics.listenToMusic(true);
+            } else if (startListening(app)) {
                 if (!app.isVisible) {
                     app.isVisible = true;
                     ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
@@ -687,6 +750,7 @@ void runCommand(AppState& app, UINT cmd) {
             else app.physics.goToSleep();
             break;
         case CMD_TREAT:
+            app.mealPending = false;
             app.physics.offerTreat();
             if (!app.isVisible) {
                 app.isVisible = true;
@@ -830,9 +894,13 @@ void runControl(AppState& app, PetControl button) {
         case PetControl::Sleep:
         case PetControl::Wake: runCommand(app, CMD_TOGGLE_SLEEP); break;
         case PetControl::Music: runCommand(app, CMD_MUSIC); break;
-        case PetControl::Auto: runCommand(app, CMD_AUTO_DESK); break;
-        case PetControl::Keyboard: runCommand(app, CMD_KEYBOARD_MODE); break;
-        case PetControl::Tablet: runCommand(app, CMD_TABLET_MODE); break;
+        case PetControl::Mode:
+            switch (app.settings.deskMode()) {
+                case DeskMode::Keyboard: runCommand(app, CMD_TABLET_MODE); break;
+                case DeskMode::Tablet: runCommand(app, CMD_AUTO_DESK); break;
+                case DeskMode::Auto: runCommand(app, CMD_KEYBOARD_MODE); break;
+            }
+            break;
         case PetControl::KeyBubbles: runCommand(app, CMD_TOGGLE_BADGES); break;
         case PetControl::MouseBubbles: runCommand(app, CMD_TOGGLE_MOUSE_BADGES); break;
         case PetControl::Hide: runCommand(app, CMD_TOGGLE_CONTROLS); break;
@@ -892,8 +960,26 @@ void tickAndRender(AppState& app) {
         app.controlHoverSince = now;
     }
 
+    bool overControl = hover != PetControl::None || app.heldControl != PetControl::None;
+    resumeFromIdleInput(app);
+    if (!app.physics.ignoring() && !app.physics.feeding() &&
+        mealReady(app.mealPending, app.mealWaitsForIdle, app.input, now)) {
+        app.mealPending = false;
+        app.physics.offerTreat();
+    }
+    const auto rest = app.physics.breakDue(dt, app.input, now, overControl);
+    if (rest != CatPhysics::Break::None) {
+        SYSTEMTIME local{};
+        GetLocalTime(&local);
+        static std::mt19937 random{std::random_device{}()};
+        bool preferred = std::bernoulli_distribution(0.7)(random);
+        if (!breakIsMusic(local.wHour, preferred) || !startListening(app)) app.physics.goToSleep();
+        if (rest == CatPhysics::Break::Idle) app.physics.beginIdleRest(now);
+    }
+
     int detected = app.deskMonitor->result.load();
-    if (app.settings.autoDeskMode && detected >= 0 && app.settings.tabletMode != (detected == 1)) {
+    if (app.physics.usingDesk() && app.settings.autoDeskMode && detected >= 0 &&
+        app.settings.tabletMode != (detected == 1)) {
         app.settings.tabletMode = detected == 1;
         app.physics.penDown = false;
         app.physics.latestTabletKey = -1;
@@ -903,7 +989,7 @@ void tickAndRender(AppState& app) {
         stopListening(app);
         showTrayBalloon(app, L"KuroCat 听音乐", L"无法读取当前的系统音频输出。");
     }
-    app.physics.step(dt, wr, app.input, app.settings, hover != PetControl::None || app.heldControl != PetControl::None,
+    app.physics.step(dt, wr, app.input, app.settings, overControl,
                      app.audioBeat.pulse(), app.audioBeat.audible());
     if (!physicsLooksSane(app.physics)) {
         // A single non-finite value would otherwise make every later frame draw nothing (the cat
@@ -915,18 +1001,23 @@ void tickAndRender(AppState& app) {
     }
 
     // Smart Click-Through + Petting Detection
+    bool bellyHovered = false;
     if (!app.isDragging && app.heldControl == PetControl::None) {
         if (PtInRect(&wr, cursor)) {
-            CatHitZone zone = CatRenderer::hitTest(cp, app.physics, app.settings.coatTheme);
+            CatHitZone zone = CatRenderer::hitTest(cp, app.physics);
+            bool overBowl = CatRenderer::bowlAt(cp, app.physics);
+            if (app.physics.resting() && cp.y >= 230.0f) zone = CatHitZone::None;
             if (app.settings.tabletMode && cp.y >= 230.f && cp.y <= 296.f && cp.x >= CatPhysics::keypadLeft && cp.x <= 325.f)
                 zone = CatHitZone::None; // Let the underlying drawing app receive pen strokes.
+            bellyHovered = app.settings.petInteraction && zone == CatHitZone::Belly;
+            if (zone == CatHitZone::Desk) app.physics.stopPetting();
             if (zone != CatHitZone::None) {
                 float d = app.hasLastHover ? std::hypot(cp.x - app.lastHoverCanvas.x, cp.y - app.lastHoverCanvas.y) : 0.0f;
                 bool stroke = d > 1.2f && d < 80.0f;
                 if (app.settings.petInteraction && (!app.hasLastHover || stroke)) {
-                    if (zone == CatHitZone::LeftEar || zone == CatHitZone::RightEar || zone == CatHitZone::Belly)
-                        app.physics.touchOrca(zone == CatHitZone::Belly, zone == CatHitZone::LeftEar);
-                    else if (stroke)
+                    if (zone == CatHitZone::LeftEar || zone == CatHitZone::RightEar)
+                        app.physics.touchEar(zone == CatHitZone::LeftEar);
+                    else if (stroke && (zone == CatHitZone::Head || zone == CatHitZone::Body))
                         app.physics.registerPetStroke(cp, d, zone == CatHitZone::Head, app.settings);
                 }
                 app.lastHoverCanvas = cp;
@@ -935,13 +1026,14 @@ void tickAndRender(AppState& app) {
                 app.hasLastHover = false;
             }
             bool overKey = app.settings.tabletMode && app.physics.usingDesk() && CatPhysics::tabletKeyAt(cp) >= 0;
-            bool clickThrough = !unlocked || (zone == CatHitZone::None && !overKey && hover == PetControl::None);
+            bool clickThrough = !unlocked || (zone == CatHitZone::None && !overBowl && !overKey && hover == PetControl::None);
             setClickThrough(app.hwnd, clickThrough);
         } else {
             app.hasLastHover = false;
             setClickThrough(app.hwnd, true);
         }
     }
+    app.physics.setBellyHovered(bellyHovered);
 
     // Render 32-bit Premultiplied ARGB frame directly into DIB and present via UpdateLayeredWindow
     app.ensureBuffer(w, h);
@@ -1042,22 +1134,46 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             break;
 
+        case WM_LBUTTONDBLCLK:
         case WM_LBUTTONDOWN: {
             bool altHeld = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
             if (app && (!app->settings.fullClickThrough || altHeld)) {
                 RECT bounds{};
                 GetClientRect(hwnd, &bounds);
-                Pt point = canvasPoint({short(LOWORD(lParam)), short(HIWORD(lParam))}, bounds, app->settings);
+                POINT local{short(LOWORD(lParam)), short(HIWORD(lParam))};
+                Pt point = canvasPoint(local, bounds, app->settings);
                 PetControl button = controlAt(point, app->settings);
                 if (button != PetControl::None) {
+                    app->previousClick = ClickTarget::None;
                     app->heldControl = button;
                     SetCapture(hwnd);
                     return 0;
                 }
-                if (app->physics.resting() && !altHeld) {
-                    app->physics.wakeUp();
+                if (!altHeld && CatRenderer::bowlAt(point, app->physics)) {
+                    if (isDoubleClick(*app, ClickTarget::Bowl, local, msg)) {
+                        if (app->physics.listening()) stopListening(*app);
+                        app->physics.takeBowl();
+                        app->demoActive = false;
+                    } else {
+                        app->physics.disturbBowl();
+                    }
                     return 0;
                 }
+                if ((app->physics.resting() || app->physics.listening()) && !altHeld) {
+                    if (!app->physics.ignoring()) {
+                        CatHitZone zone = CatRenderer::hitTest(point, app->physics);
+                        if (zone == CatHitZone::Head || zone == CatHitZone::LeftEar || zone == CatHitZone::RightEar) {
+                            if (isDoubleClick(*app, ClickTarget::RestingHead, local, msg)) {
+                                if (app->physics.listening()) stopListening(*app);
+                                app->physics.wakeUp();
+                            }
+                            return 0;
+                        }
+                    }
+                    app->previousClick = ClickTarget::None;
+                    return 0;
+                }
+                app->previousClick = ClickTarget::None;
                 if (app->settings.tabletMode && app->physics.usingDesk() && !altHeld) {
                     int slot = CatPhysics::tabletKeyAt(point);
                     if (slot >= 0) {
@@ -1113,6 +1229,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_RBUTTONUP:
             if (app) {
+                app->previousClick = ClickTarget::None;
                 POINT pt = {};
                 GetCursorPos(&pt);
                 showContextMenu(*app, pt);
@@ -1314,7 +1431,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         setAutoStartEnabled(true);
     }
 
-    app.input.onKeyDown = [&](PhysicalKey k) { app.physics.triggerKeyDown(k, app.settings); };
+    app.input.onKeyDown = [&](PhysicalKey k) {
+        resumeFromIdleInput(app);
+        app.physics.triggerKeyDown(k, app.settings);
+    };
     app.input.onMouseClick = [&](int btn, bool down) {
         if (app.isVisible && app.settings.showControls && mouseIsUnlocked(app)) {
             RECT bounds{};
@@ -1327,11 +1447,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
                 return;
             }
         }
+        if (down) resumeFromIdleInput(app);
         app.physics.triggerMouseClick(btn, down, app.settings);
     };
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
+    wc.style = CS_DBLCLKS;
     wc.lpfnWndProc = wndProc;
     wc.hInstance = hInst;
     wc.lpszClassName = OVERLAY_CLASS;

@@ -42,6 +42,16 @@ public:
     std::function<void(PhysicalKey)> onKeyUp;
     std::function<void(int, bool)> onMouseClick;
 
+    double lastActivity() const {
+        return std::max({lastMouseMoveTime, lastMouseClickTime, lastKeyActivityTime});
+    }
+
+    bool activelyUsed(double now) const {
+        const double last = lastActivity();
+        return !activeKeys.empty() || leftMouseDown || rightMouseDown || otherMouseDown ||
+               (last > 0.0 && now - last < 2.0);
+    }
+
     bool registerRawInput(HWND hwnd) {
         RAWINPUTDEVICE rid[2] = {};
         // Keyboard (Generic Desktop 0x01, Usage 0x06)
@@ -120,6 +130,7 @@ public:
 
             bool isBreak = (kb.Flags & RI_KEY_BREAK) != 0;
             lastRawKbTime_ = nowSeconds();
+            if (!isBreak) lastKeyActivityTime = lastRawKbTime_;
             setRawKeyState(key, !isBreak);
         } else if (raw->header.dwType == RIM_TYPEMOUSE) {
             const RAWMOUSE& m = raw->data.mouse;

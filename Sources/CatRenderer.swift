@@ -105,8 +105,9 @@ enum CatRenderer {
         let profile = sin(physics.turn * .pi)
         let step = abs(sin(physics.turn * 2 * .pi)) * profile
         let breath = sin(physics.time * 2.1) * 1.6
-        return CGPoint(x: seatX + physics.bodyTilt.value * 36 + physics.headYaw.value * 7.5 + profile * 16,
-                       y: 126 + physics.headOffsetY.value + physics.headPitch.value * 4.8 + breath * 1.1 - step * 4)
+        let x = seatX + physics.bodyTilt.value * 36 + physics.headYaw.value * 7.5 + profile * 21
+        let y = 126 + physics.headOffsetY.value + physics.headPitch.value * 4.8 + breath * 1.1
+        return CGPoint(x: x, y: y + profile * 1.5 - step * 3)
     }
 
     /// Main 60fps draw routine in flipped 360x320 logical coordinate space.
@@ -119,7 +120,7 @@ enum CatRenderer {
         let coat = settings.coatTheme
         let breath = sin(physics.time * 2.1) * 1.6
         let baseSeat = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
-        let seatX = baseSeat - sin(physics.turn * .pi) * 8
+        let seatX = baseSeat - sin(physics.turn * .pi) * 11
         let seatY = CatPhysics.seatAnchor.y
 
         if physics.tabletMode {
@@ -155,7 +156,7 @@ enum CatRenderer {
             if physics.tabletMode && physics.usingDesk { drawStylus(in: ctx, physics: physics) }
             drawFrontPaws(in: ctx, seatX: seatX, seatY: seatY, breath: breath, physics: physics, coat: coat)
         } else {
-            if physics.turn < 0.61 { drawHeadFeatures(in: ctx, center: headCenter, physics: physics, eyeTheme: settings.eyeTheme, coat: coat) }
+            if physics.turn < 0.60 { drawHeadFeatures(in: ctx, center: headCenter, physics: physics, eyeTheme: settings.eyeTheme, coat: coat) }
             drawTurningPaws(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
         }
 
@@ -168,6 +169,7 @@ enum CatRenderer {
 
         // 9. Subtle Petting Sparkles / Sleep Z
         drawSparkles(in: ctx, physics: physics, eyeTheme: settings.eyeTheme)
+        drawAngerMark(in: ctx, head: headCenter, progress: physics.angerMarkProgress)
 
         // 10. Optional non-intrusive Permission Pill if global monitoring not yet granted
         if showPermissionPill {
@@ -587,18 +589,30 @@ enum CatRenderer {
         let huntDrop = hunt * 14.0
 
         // Signature low sweep out to the right, then playful upward curl at the tip!
-        let direction = cos(physics.turn * .pi)
-        let impatient = physics.tailImpatience
-        let beat = (physics.time * 1.75).truncatingRemainder(dividingBy: 1)
-        let lift = CatPhysics.ease(beat / 0.53) * (1 - CatPhysics.ease((beat - 0.53) / 0.18))
-        let snap = sin(physics.time * 25) * (0.3 + lift * 0.7)
-        let contact = 12 - 47 * lift
+        let turn = physics.turn
+        let direction = cos(turn * .pi)
+        let curl = CatPhysics.ease((turn - 0.30) / 0.23) * (1 - CatPhysics.ease((turn - 0.61) / 0.27))
+        let tipDirection = cos(min(1, turn + curl * 0.13) * .pi)
         let root = CGPoint(x: seatX + direction * 34, y: seatY - 6)
-        let c1 = CGPoint(x: seatX + direction * 64, y: seatY + 2 + wag1 * 0.35 + huntDrop * 0.4)
-        let c2 = CGPoint(x: seatX + direction * (66 + wag2 * 0.4 + snap * 5 * impatient),
-                         y: seatY + (-26 + wag1 * 0.7 + huntDrop) * (1 - impatient) + contact * 0.9 * impatient)
-        let tip = CGPoint(x: seatX + direction * (91 + wag2 * 0.5 + snap * 10 * impatient),
-                          y: seatY + (-30 + wag1 * 0.85 + huntDrop) * (1 - impatient) + contact * impatient)
+        var c1 = CGPoint(x: seatX + direction * 64 - curl * 31, y: seatY + 2 + wag1 * 0.35 + huntDrop * 0.4 + curl * 19)
+        var c2 = CGPoint(x: seatX + tipDirection * (66 + wag2 * 0.4) - curl * 26, y: seatY - 26 + wag1 * 0.7 + huntDrop + curl * 13)
+        var tip = CGPoint(x: seatX + tipDirection * (91 + wag2 * 0.5) - curl * 16, y: seatY - 30 + wag1 * 0.85 + huntDrop + curl * 14)
+        let impatient = physics.tailImpatience
+        if impatient > 0.001 {
+            let beat = physics.tailSlapTime.truncatingRemainder(dividingBy: 0.56) / 0.56
+            func lift(_ phase: CGFloat) -> CGFloat {
+                CatPhysics.ease(phase / 0.43) * (1 - CatPhysics.ease((phase - 0.43) / 0.19))
+            }
+            let baseLift = lift(beat), middleLift = lift(beat - 0.08), tipLift = lift(beat - 0.14)
+            let rebound = CatPhysics.ease((beat - 0.76) / 0.08) * (1 - CatPhysics.ease((beat - 0.84) / 0.13))
+            func blend(_ point: CGPoint, _ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: point.x + (seatX + direction * x - point.x) * impatient,
+                        y: point.y + (seatY + y - point.y) * impatient)
+            }
+            c1 = blend(c1, 61 - 11 * baseLift, 7 - 26 * baseLift)
+            c2 = blend(c2, 77 - 24 * middleLift, 15 - 69 * middleLift)
+            tip = blend(tip, 99 - 21 * tipLift - 5 * rebound, 11 - 59 * tipLift - 10 * rebound)
+        }
 
         ctx.saveGState()
         let tailColor = earTailColor(coat)
@@ -630,6 +644,30 @@ enum CatRenderer {
         ctx.restoreGState()
     }
 
+    private static func drawAngerMark(in ctx: CGContext, head: CGPoint, progress: CGFloat) {
+        guard progress < 1 else { return }
+        let appear = CatPhysics.ease(progress / 0.18)
+        let fade = 1 - CatPhysics.ease((progress - 0.65) / 0.35)
+        let size = 0.65 + 0.43 * appear + 0.12 * sin(.pi * appear)
+        let mark = CGMutablePath()
+        for x: CGFloat in [-1, 1] {
+            for y: CGFloat in [-1, 1] {
+                mark.move(to: CGPoint(x: x * 3.6, y: y * 9.8))
+                mark.addQuadCurve(to: CGPoint(x: x * 9.8, y: y * 3.6), control: CGPoint(x: x * 2, y: y * 2))
+            }
+        }
+        ctx.saveGState()
+        ctx.translateBy(x: head.x + 44 + progress * 4, y: head.y - 49 - progress * 13)
+        ctx.rotate(by: (14 - progress * 10) * .pi / 180)
+        ctx.scaleBy(x: size, y: size)
+        ctx.setLineCap(.round)
+        ctx.setStrokeColor(rgb(0xFFF1E5, 0.87 * appear * fade).cgColor)
+        ctx.setLineWidth(4.7); ctx.addPath(mark); ctx.strokePath()
+        ctx.setStrokeColor(rgb(0xCF373C, appear * fade).cgColor)
+        ctx.setLineWidth(2.8); ctx.addPath(mark); ctx.strokePath()
+        ctx.restoreGState()
+    }
+
     // MARK: - Unified C1-Continuous Cat Silhouette (Crown -> Cheeks -> Plush Neck -> Pear Hips)
 
     private static func drawUnifiedSilhouette(
@@ -656,7 +694,8 @@ enum CatRenderer {
 
         let cB = cos(bTilt), sB = sin(bTilt)
         let sy = physics.bodySquash.value
-        let profile = sin(physics.turn * .pi)
+        let turn = physics.turn
+        let profile = sin(turn * .pi)
         let sx = (1.0 + (1.0 - sy) * 0.55) * (1 - profile * 0.13)
         func B(_ lx: CGFloat, _ ly: CGFloat) -> CGPoint {
             let rx = lx * sx
@@ -675,10 +714,10 @@ enum CatRenderer {
         // ONE single tangent-continuous closed cubic Bezier path — mathematically impossible to form any ledge or protrusion!
         let crown  = H(cheekShift * 0.2, -30 + crownDrop)
         let rCheek = H(rightCheekX, 5)
-        let rHip   = B(49.0, -14)
+        let rHip   = B(49.0 + profile * 3, -14)
         let rBot   = B(24.0, 12)
         let lBot   = B(-24.0, 12)
-        let lHip   = B(-49.0, -14)
+        let lHip   = B(-49.0, -14 - profile * 3)
         let lCheek = H(leftCheekX, 5)
 
         let path = CGMutablePath()
@@ -692,7 +731,7 @@ enum CatRenderer {
         path.addCurve(to: crown,  control1: H(leftCheekX - 1.5, -14), control2: H(-26 + cheekShift * 0.3, -30 + crownDrop))
         path.closeSubpath()
 
-        let back = CatPhysics.ease((physics.turn - 0.38) / 0.40)
+        let back = CatPhysics.ease((turn - 0.43) / 0.37)
         ctx.saveGState()
         if back > 0 {
             ctx.addPath(path); ctx.clip()
@@ -769,12 +808,13 @@ enum CatRenderer {
         }
         ctx.restoreGState()
 
-        if coat == .orcaCat && physics.turn < 0.66 {
-            let visible = CatPhysics.ease((0.66 - physics.turn) / 0.30)
-            func chest(_ x: CGFloat, _ y: CGFloat) -> CGPoint { B(x * (0.3 + 0.7 * visible) + (1 - visible) * 20, y) }
+        if coat == .orcaCat && turn < 0.63 {
+            let rotation = turn / 0.63 * .pi / 2
+            let width = cos(rotation), side = sin(rotation)
+            func chest(_ x: CGFloat, _ y: CGFloat) -> CGPoint { B(x * width + 39 * side, y) }
             func chin(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-                let p = projectHead3D(x: x, y: y, z: 22, yawRad: faceYaw(physics), pitchRad: pitch * 0.36).pt
-                return H(p.x, p.y)
+                let p = projectHead3D(x: x, y: y, z: 22, yawRad: yaw * 0.5, pitchRad: pitch * 0.36).pt
+                return H(p.x * width + 29 * side, p.y)
             }
             let bib = CGMutablePath()
             bib.move(to: chin(-27, 24))
@@ -789,7 +829,7 @@ enum CatRenderer {
             bib.addCurve(to: chin(-27, 24), control1: chest(-31, -66), control2: chin(-31, 31))
             bib.closeSubpath()
             ctx.saveGState(); ctx.addPath(path); ctx.clip()
-            ctx.setFillColor(pawColor(coat).withAlphaComponent(visible).cgColor)
+            ctx.setFillColor(pawColor(coat).withAlphaComponent(CatPhysics.ease((0.63 - turn) / 0.08)).cgColor)
             ctx.addPath(bib); ctx.fillPath(); ctx.restoreGState()
         }
 
@@ -1302,23 +1342,31 @@ enum CatRenderer {
 
     private static func drawTurningPaws(in ctx: CGContext, seatX: CGFloat, seatY: CGFloat, physics: CatPhysics, coat: CatCoatTheme) {
         let turn = physics.turn
+        guard turn < 0.61 else { return }
         let arc = sin(turn * .pi), step = abs(sin(turn * 2 * .pi)) * arc
         let weight = CatPhysics.ease(turn / 0.22)
+        let nearVisibility = 1 - CatPhysics.ease((turn - 0.43) / 0.18)
+        let farVisibility = 1 - CatPhysics.ease((turn - 0.24) / 0.23)
         let left = physics.leftPaw.point, right = physics.rightPaw.point
-        let near = CGPoint(x: left.x + (seatX - 22 + arc * 32 - left.x) * weight,
-                           y: left.y + (seatY + 9 - step * 8 - left.y) * weight)
+        let near = CGPoint(x: left.x + (seatX - 22 + arc * 35 - left.x) * weight,
+                           y: left.y + (seatY + 9 - step * 8 - (1 - nearVisibility) * 6 - left.y) * weight)
         let far = CGPoint(x: right.x + (seatX + 26 + arc * 14 - right.x) * weight,
-                          y: right.y + (seatY + 7 - (arc - step) * 8 - right.y) * weight)
-        let shoulder = CGPoint(x: seatX - 14 + arc * 25, y: seatY - 34)
-        let profile = CatPhysics.ease((turn - 0.46) / 0.25)
-        if profile < 1 {
+                          y: right.y + (seatY + 7 - (arc - step) * 8 - (1 - farVisibility) * 5 - right.y) * weight)
+        let shoulder = CGPoint(x: seatX - 14 + arc * 48, y: seatY - 38)
+        if nearVisibility > 0.02 {
             let mid = CGPoint(x: (shoulder.x + near.x) * 0.5 - 3, y: (shoulder.y + near.y) * 0.5)
-            drawLimb(in: ctx, start: shoulder, control: mid, end: near, startWidth: 16 * (1 - profile),
-                     endWidth: 12, outlineOnLeftSide: false, outlineAlpha: 0.6, coat: coat, chestFur: 0.65 * (1 - profile))
+            let chestFur = 0.65 * nearVisibility * (1 - CatPhysics.ease((turn - 0.28) / 0.16))
+            drawLimb(in: ctx, start: shoulder, control: mid, end: near, startWidth: 16 * nearVisibility,
+                     endWidth: 12 * nearVisibility, outlineOnLeftSide: false, outlineAlpha: 0.6 * nearVisibility,
+                     coat: coat, chestFur: chestFur)
         }
         ctx.setFillColor(pawColor(coat).cgColor)
-        ctx.fillEllipse(in: CGRect(x: near.x - 8, y: near.y - 4, width: 16, height: 9))
-        ctx.fillEllipse(in: CGRect(x: far.x - 7, y: far.y - 4, width: 14, height: 9))
+        ctx.fillEllipse(in: CGRect(x: near.x - 8 * nearVisibility, y: near.y - 4 * nearVisibility,
+                                  width: 16 * nearVisibility, height: 9 * nearVisibility))
+        if farVisibility > 0 {
+            ctx.fillEllipse(in: CGRect(x: far.x - 7 * farVisibility, y: far.y - 4 * farVisibility,
+                                      width: 14 * farVisibility, height: 9 * farVisibility))
+        }
     }
 
     /// Signature tucked sitting front legs (black with mint lines OR Siamese cream-to-chocolate socks!)

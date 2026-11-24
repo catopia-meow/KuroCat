@@ -33,12 +33,14 @@ enum class EyeColorTheme : int {
     ReferenceHazel = 5
 };
 
+enum class DeskMode { Keyboard, Tablet, Auto };
+
 struct CatSettings {
     bool tabletMode = true;
     bool autoDeskMode = true;
     bool showKeyBadges = true;
     bool showMouseBadges = true;
-    bool showControls = true;
+    bool showControls = false;
     bool showKeyLegends = true;
     bool footEasterEgg = true;
     bool petInteraction = true;
@@ -52,6 +54,10 @@ struct CatSettings {
     int posX = -99999;
     int posY = -99999;
 
+    DeskMode deskMode() const {
+        return autoDeskMode ? DeskMode::Auto : (tabletMode ? DeskMode::Tablet : DeskMode::Keyboard);
+    }
+
     void loadFromRegistry() {
         HKEY hKey = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\KuroCat", 0, KEY_READ, &hKey) != ERROR_SUCCESS) return;
@@ -64,7 +70,6 @@ struct CatSettings {
         tabletMode = readDword(L"TabletMode", 1) != 0;
         showKeyBadges    = readDword(L"ShowKeyBadges", 1) != 0;
         showMouseBadges  = readDword(L"ShowMouseBadges", 1) != 0;
-        showControls     = readDword(L"ShowControls", 1) != 0;
         showKeyLegends   = readDword(L"ShowKeyLegends", 1) != 0;
         footEasterEgg    = readDword(L"FootEasterEgg", 1) != 0;
         petInteraction   = readDword(L"PetInteraction", 1) != 0;
@@ -93,7 +98,6 @@ struct CatSettings {
         if (!autoDeskMode) writeDword(L"TabletMode", tabletMode);
         writeDword(L"ShowKeyBadges", showKeyBadges ? 1 : 0);
         writeDword(L"ShowMouseBadges", showMouseBadges ? 1 : 0);
-        writeDword(L"ShowControls", showControls ? 1 : 0);
         writeDword(L"ShowKeyLegends", showKeyLegends ? 1 : 0);
         writeDword(L"FootEasterEgg", footEasterEgg ? 1 : 0);
         writeDword(L"PetInteraction", petInteraction ? 1 : 0);
@@ -168,6 +172,8 @@ public:
     static constexpr Pt RightPawRest    = { 204.0f, 235.0f };
     static constexpr Pt HindFootRest    = { 214.0f, 234.0f };
     static constexpr Pt MouseBaseCenter = { 78.0f, 258.0f };
+    static constexpr float BowlEnd = 2.86f;
+    static constexpr float IdleSeconds = 45.0f;
 
     Spring2D leftPaw{LeftPawRest};
     Spring2D rightPaw{RightPawRest};
@@ -181,7 +187,6 @@ public:
     Spring1D headYaw{0.0f};
     Spring1D headPitch{0.0f};
     Spring1D headOffsetY{0.0f};
-    Spring1D earFold{0.0f};
     Spring1D earTwitch{0.0f};
 
     Spring2D eyeGaze{{0.0f, 0.0f}};
@@ -212,12 +217,24 @@ public:
         return t * t * (3.0f - 2.0f * t);
     }
 
-    bool resting() const { return manualSleep_ || sleepiness >= 0.4f; }
+    bool resting() const { return sleeping_; }
     bool feeding() const { return treatAge_ >= 0.0f; }
+    bool bowlVisible() const { return feeding() && treatAge_ < BowlEnd; }
     bool listening() const { return listening_; }
+    bool angry() const { return (bellyHovered_ && usingDesk()) || time < annoyedUntil_; }
+    bool ignoring(double now = nowSeconds()) const { return now < ignoreUntil_; }
+    float turnAway() const { return turnAway_; }
+    float tailImpatience() const { return tailImpatience_; }
+    float tailSlapTime() const { return tailSlapTime_; }
+    float angerMarkProgress() const {
+        const float turnAge = time - turnScoldTime_;
+        if (turnAge < 1.48f) return turnAge / 1.48f;
+        if (tailImpatience_ > 0.10f) return std::fmod(tailSlapTime_, 1.68f) / 0.90f;
+        return 1.0f;
+    }
     float headphones() const { return headsetFit_; }
     float musicEyes() const { return musicEyes_; }
-    bool usingDesk() const { return !resting() && !feeding() && !listening(); }
+    bool usingDesk() const { return !resting() && !feeding() && !listening() && !ignoring() && turnAway_ == 0.0f; }
     float breathingOffset() const { return std::sin(breathPhase_) * 1.6f; }
     float treatAge() const { return treatAge_; }
     float washLift() const {
@@ -227,12 +244,22 @@ public:
 
     void goToSleep() {
         treatAge_ = -1.0f;
-        manualSleep_ = true;
+        sleeping_ = true;
+        idleRestSince_ = -1.0;
         clearDeskPose();
     }
 
+    void beginIdleRest(double now) { idleRestSince_ = now; }
+
+    bool canResumeFromInput(double activity) const {
+        return idleRestSince_ >= 0.0 && activity > idleRestSince_ &&
+               activity - idleRestSince_ <= 300.0 && !ignoring();
+    }
+
     void wakeUp() {
-        manualSleep_ = false;
+        sleeping_ = false;
+        idleRestSince_ = -1.0;
+        workSeconds_ = 0.0f;
         lastPetTime_ = nowSeconds();
         sleepZCooldown_ = 0.0f;
         sparkles.erase(std::remove_if(sparkles.begin(), sparkles.end(),
@@ -240,18 +267,50 @@ public:
     }
 
     void offerTreat() {
-        if (feeding()) return;
-        wakeUp();
+        if (feeding() || ignoring()) return;
         treatAge_ = 0.0f;
+        bowlScoldUntil_ = 0.0f;
         clearDeskPose();
+        sparkles.erase(std::remove_if(sparkles.begin(), sparkles.end(),
+            [](const PurrSparkle& particle) { return particle.isSleepZ; }), sparkles.end());
     }
 
     void listenToMusic(bool enabled) {
         listening_ = enabled;
+        idleRestSince_ = -1.0;
         if (!enabled) return;
-        wakeUp();
+        lastPetTime_ = nowSeconds();
+        workSeconds_ = 0.0f;
         treatAge_ = -1.0f;
         previousPulse_ = 0.0f;
+        clearDeskPose();
+    }
+
+    enum class Break { None, Idle, Work };
+
+    Break breakDue(float elapsed, const InputEngine& engine, double now, bool overControl) {
+        if (!usingDesk()) return Break::None;
+        const bool working = engine.activelyUsed(now);
+        if (working && !overControl) workSeconds_ += elapsed;
+        if (workSeconds_ >= workLimit_) return Break::Work;
+        if (!working && now - std::max(engine.lastActivity(), lastPetTime_) >= IdleSeconds) return Break::Idle;
+        return Break::None;
+    }
+
+    void disturbBowl() {
+        flattenEars();
+        bowlScoldUntil_ = time + 0.8f;
+    }
+
+    void takeBowl() {
+        flattenEars();
+        turnScoldTime_ = time;
+        airplaneUntil_ = time + 0.91f;
+        treatAge_ = -1.0f;
+        idleRestSince_ = -1.0;
+        turnStarts_ = nowSeconds() + 0.58;
+        ignoreUntil_ = turnStarts_ + 180.0;
+        sparkles.clear();
         clearDeskPose();
     }
 
@@ -333,7 +392,7 @@ public:
     }
 
     void triggerKeyDown(PhysicalKey key, const CatSettings& settings) {
-        if (manualSleep_ || feeding() || listening()) return;
+        if (!usingDesk()) return;
         double now = nowSeconds();
         if (settings.tabletMode) {
             pressTabletKey(key, now);
@@ -371,7 +430,7 @@ public:
     }
 
     void triggerMouseClick(int button, bool isDown, const CatSettings& settings) {
-        if (manualSleep_ || feeding() || listening()) return;
+        if (!usingDesk()) return;
         if (settings.tabletMode) {
             POINT cursor;
             if (button == 0 && GetCursorPos(&cursor)) sampleTablet(cursor, isDown);
@@ -399,16 +458,20 @@ public:
         }
     }
 
-    void touchOrca(bool belly, bool left) {
+    void setBellyHovered(bool hovered) {
+        if (hovered && usingDesk() && !bellyHovered_) {
+            petHeadIntensity = petBodyIntensity = 0.0f;
+            lastPetTime_ = nowSeconds();
+        }
+        bellyHovered_ = hovered;
+    }
+
+    void stopPetting() { petHeadIntensity = petBodyIntensity = 0.0f; }
+
+    void touchEar(bool left) {
         if (!usingDesk()) return;
         lastPetTime_ = nowSeconds();
         sleepiness = 0.0f;
-        if (belly) {
-            airplaneUntil_ = time + 0.65f;
-            annoyedUntil_ = time + 2.4f;
-            petHeadIntensity = petBodyIntensity = 0.0f;
-            return;
-        }
         if (time - lastEarTouch_ < 0.24f) return;
         earFlick_[left ? 0 : 1].velocity += 12.0f;
         if (time - lastEarTouch_ < 1.1f && time - lastShake_ > 0.8f) {
@@ -418,9 +481,9 @@ public:
         lastEarTouch_ = time;
     }
 
-    float orcaEarAngle(bool left) const {
+    float earAngle(bool left) const {
         int side = left ? 0 : 1;
-        return orcaAngle_[side].value + earFlick_[side].value;
+        return earAngles_[side].value + earFlick_[side].value;
     }
 
     void registerPetStroke(Pt canvasPoint, float delta, bool isHead, const CatSettings& settings) {
@@ -452,13 +515,24 @@ public:
               bool overControl = false, float musicPulse = 0.0f, bool soundPlaying = false) {
         float dt = std::min(rawDt, 1.0f / 25.0f);
         time += dt;
-        if (feeding()) {
-            treatAge_ += dt;
-            if (treatAge_ >= 5.24f) treatAge_ = -1.0f;
+        double now = nowSeconds();
+        if (ignoreUntil_ > 0.0 && now >= ignoreUntil_) {
+            ignoreUntil_ = 0.0;
+            lastPetTime_ = now;
+        }
+        const bool sulking = ignoring(now);
+        const float turnTarget = sulking && now >= turnStarts_ ? 1.0f : 0.0f;
+        turnProgress_ += std::clamp(turnTarget - turnProgress_, -dt / 0.84f, dt / 0.84f);
+        turnAway_ = ease(turnProgress_);
+        if (feeding() && time >= bowlScoldUntil_) {
+            treatAge_ += bowlVisible() ? dt * 0.5f : dt;
+            if (treatAge_ >= 5.24f) {
+                treatAge_ = -1.0f;
+                lastPetTime_ = nowSeconds();
+            }
         }
         engine.pollMouse(dt);
 
-        double now = nowSeconds();
         const auto& activeKeys = engine.activeKeys;
         const auto& orderedKeys = engine.pressedOrder;
 
@@ -482,16 +556,23 @@ public:
             }
         }
 
-        // 2. Sleepy idle detection
-        double lastAny = std::max({engine.lastKeyActivityTime, engine.lastMouseMoveTime,
-                                  engine.lastMouseClickTime, lastPetTime_});
-        double idleSec = lastAny > 0.0 ? (now - lastAny) : 0.0;
-        float targetSleep = manualSleep_ ? 1.0f : (activeKeys.empty() && !feeding() && !listening()
-            ? ease((float)(idleSec - 45.0) / 6.0f) : 0.0f);
+        const bool deskActive = usingDesk();
+        const bool typing = deskActive && engine.lastKeyActivityTime > 0.0 &&
+                            now - engine.lastKeyActivityTime <= 2.0;
+        if (typing) {
+            if (typingSince_ < 0.0) typingSince_ = engine.lastKeyActivityTime;
+        } else {
+            typingSince_ = -1.0;
+        }
+        const bool impatient = typing && now - typingSince_ > 60.0;
+        tailImpatience_ += ((impatient ? 1.0f : 0.0f) - tailImpatience_) * std::min(1.0f, dt * 6.0f);
+        tailSlapTime_ = impatient || tailImpatience_ > 0.01f ? tailSlapTime_ + dt : 0.0f;
+        const bool musicActive = listening() && !feeding() && !sulking;
+        float targetSleep = resting() && !feeding() && !sulking ? 1.0f : 0.0f;
         sleepiness += (targetSleep - sleepiness) * dt * (targetSleep > sleepiness ? 3.0f : 5.0f);
         breathPhase_ += dt * (2.1f - 0.54f * sleepiness);
-        headsetFit_ += ((listening() ? 1.0f : 0.0f) - headsetFit_) * std::min(1.0f, dt * 12.0f);
-        float close = listening() && soundPlaying ? 1.0f : 0.0f;
+        headsetFit_ += ((musicActive ? 1.0f : 0.0f) - headsetFit_) * std::min(1.0f, dt * 12.0f);
+        float close = musicActive && soundPlaying ? 1.0f : 0.0f;
         if (close == 0.0f) musicPulse = 0.0f;
         musicEyes_ += (close - musicEyes_) * std::min(1.0f, dt * 12.0f);
         musicSwayPhase_ += dt * (4.3f + 1.8f * musicPulse);
@@ -507,14 +588,15 @@ public:
                                      { 9.0f, -20.0f }, 0.0f, 1.4f, true });
             }
         }
-        float lean = feeding() ? ease((treatAge_ - 0.25f) / 0.55f) * ease((2.73f - treatAge_) / 0.49f) : 0.0f;
+        float lean = feeding() && time >= bowlScoldUntil_
+            ? ease((treatAge_ - 0.25f) / 0.55f) * ease((2.73f - treatAge_) / 0.49f) : 0.0f;
         float bites = lean * (0.5f - 0.5f * std::cos(std::max(0.0f, treatAge_ - 0.8f) * 13.1f));
         float lift = washLift();
         float wipe = ease((treatAge_ - 3.31f) / 0.25f) * (0.5f - 0.5f * std::cos((treatAge_ - 3.31f) * 11.5f));
 
         // 2b. Fast Mouse Movement -> Hunting Mode (big round boba pupils + low crouch!)
         float mouseSpeed = std::hypot(engine.mouseVelocity.x, engine.mouseVelocity.y);
-        if (usingDesk() && mouseSpeed > 460.0f && petHeadIntensity < 0.25f && petBodyIntensity < 0.25f) {
+        if (deskActive && mouseSpeed > 460.0f && petHeadIntensity < 0.25f && petBodyIntensity < 0.25f) {
             float boost = std::min(1.0f, (mouseSpeed - 460.0f) / 1100.0f);
             huntIntensity.target = std::min(1.0f, huntIntensity.target + (0.45f + boost * 1.15f) * dt);
             sleepiness = 0.0f;
@@ -530,9 +612,11 @@ public:
         bool mouseActivelyUsed = (now - engine.lastMouseMoveTime < 0.75) || engine.leftMouseDown || engine.rightMouseDown;
 
         std::vector<PhysicalKey> leftCands, rightCands;
-        for (PhysicalKey k : orderedKeys) {
-            if (prefersViewerLeftPaw(k)) leftCands.push_back(k);
-            else rightCands.push_back(k);
+        if (deskActive) {
+            for (PhysicalKey k : orderedKeys) {
+                if (prefersViewerLeftPaw(k)) leftCands.push_back(k);
+                else rightCands.push_back(k);
+            }
         }
 
         PhysicalKey leftKey = leftCands.empty() ? PhysicalKey::None : leftCands.back();
@@ -555,7 +639,7 @@ public:
             rightKey = sorted.back();
         }
 
-        if (settings.footEasterEgg) {
+        if (deskActive && settings.footEasterEgg) {
             if (orderedKeys.size() >= 3) {
                 for (PhysicalKey k : orderedKeys) {
                     if (k != leftKey && k != rightKey) { footKey = k; break; }
@@ -575,10 +659,10 @@ public:
         }
 
         // Subtle mini-mouse movement
-        mouseOffset.setTarget({
+        mouseOffset.setTarget(deskActive ? Pt{
             std::clamp(engine.mouseVelocity.x * 0.0045f, -5.5f, 5.5f),
             std::clamp(engine.mouseVelocity.y * 0.0045f, -4.5f, 4.5f)
-        });
+        } : Pt{});
         mouseOffset.step(dt, 120.0f, 16.0f);
         mousePressLeft.step(dt, 400.0f, 24.0f);
         mousePressRight.step(dt, 400.0f, 24.0f);
@@ -615,7 +699,7 @@ public:
             hindFootActive.target = 0.0f;
         }
 
-        if (settings.tabletMode && usingDesk()) {
+        if (settings.tabletMode && deskActive) {
             if (overControl) penDown = false;
             else sampleTablet(engine.lastCursorPos, engine.leftMouseDown);
             for (auto& cap : tabletKeys) cap.held = activeKeys.count(cap.key) != 0;
@@ -636,7 +720,7 @@ public:
             leftPawTyping = target >= 0;
             hindFootActive.target = 0;
         }
-        if (!usingDesk()) {
+        if (!deskActive) {
             leftPawOnMouse = leftPawTyping = rightPawTyping = false;
             hindFootActive.target = 0.0f;
             leftPaw.setTarget({SeatAnchor.x - 17.0f - 7.0f * lean, 231.0f - 7.0f * sleepiness});
@@ -667,29 +751,25 @@ public:
         bodySquash.target = 1.0f - hunt * 0.11f - 0.20f * sleepiness - 0.12f * lean;
         headOffsetY.target = (leftPawTyping || rightPawTyping) ? 3.5f
             : (sleepiness * 28.0f + hunt * 10.5f + lean * 45.0f + bites * 5.5f + lift * 4.0f + 9.0f * musicPulse);
-        earFold.target = std::max(petHeadIntensity * 0.7f, petBodyIntensity * 0.45f) + sleepiness * 0.25f - hunt * 0.18f;
         earTwitch.target = 0.0f;
 
         bodyShiftX.step(dt, 140.0f, 18.0f);
         bodyTilt.step(dt, 140.0f, 18.0f);
         bodySquash.step(dt, 280.0f, 18.0f);
         headOffsetY.step(dt, 180.0f, 19.0f);
-        if (settings.coatTheme == CatCoatTheme::OrcaCat) {
-            float joy = std::max(petHeadIntensity, petBodyIntensity);
-            for (int i = 0; i < 2; ++i) {
-                float phase = time * 2.1f + i * 0.28f;
-                float angle = 0.22f + 0.07f * std::sin(phase)
-                            + bodyTilt.value * (i ? 1.0f : -1.0f);
-                angle += joy * (-0.30f + 0.18f * std::sin(time * 7.0f + i));
-                angle += sleepiness * (0.27f + 0.06f * std::sin(time * 1.3f + i));
-                if (time < annoyedUntil_) angle = 0.83f + 0.13f * std::sin(time * 6.0f + i * 2.0f);
-                if (time < airplaneUntil_) angle = 1.54f;
-                orcaAngle_[i].target = angle;
-                orcaAngle_[i].step(dt, 190.0f, 19.0f);
-                earFlick_[i].step(dt, 420.0f, 9.0f);
-            }
+        float joy = std::max(petHeadIntensity, petBodyIntensity);
+        for (int i = 0; i < 2; ++i) {
+            float phase = time * 2.1f + i * 0.28f;
+            float angle = 0.22f + 0.07f * std::sin(phase)
+                        + bodyTilt.value * (i ? 1.0f : -1.0f);
+            angle += joy * (-0.30f + 0.18f * std::sin(time * 7.0f + i));
+            angle += sleepiness * (0.27f + 0.06f * std::sin(time * 1.3f + i));
+            if (time < annoyedUntil_) angle = 0.83f + 0.13f * std::sin(time * 6.0f + i * 2.0f);
+            if (time < airplaneUntil_ || (bellyHovered_ && deskActive)) angle = 1.54f;
+            earAngles_[i].target = angle;
+            earAngles_[i].step(dt, 190.0f, 19.0f);
+            earFlick_[i].step(dt, 420.0f, 9.0f);
         }
-        earFold.step(dt, 120.0f, 16.0f);
         earTwitch.step(dt, 320.0f, 16.0f);
 
         // 5. 2.5D Head Turning (Yaw + Pitch) & Eye Tracking (Windows screen Y is top-down!)
@@ -719,15 +799,15 @@ public:
             lookY = cursorNY * 0.72f + 0.25f;
         }
 
-        if (sleepiness > 0.45f) {
-            headYaw.target = 0.0f;
-            headPitch.target = 0.29f * sleepiness;
-        } else if (listening()) {
-            headYaw.target = 0.42f * sway + 0.21f * drift;
-            headPitch.target = 0.12f + 0.72f * musicPulse;
-        } else if (feeding()) {
+        if (feeding()) {
             headYaw.target = 0.22f * lift;
             headPitch.target = 0.51f * lean + 0.16f * lift;
+        } else if (musicActive) {
+            headYaw.target = 0.42f * sway + 0.21f * drift;
+            headPitch.target = 0.12f + 0.72f * musicPulse;
+        } else if (resting() || sulking) {
+            headYaw.target = 0.0f;
+            headPitch.target = 0.29f * sleepiness;
         } else {
             headYaw.target = std::clamp(lookX, -1.0f, 1.0f);
             headPitch.target = std::clamp(lookY, -1.0f, 1.0f);
@@ -740,19 +820,22 @@ public:
         if (now - lastPetTime_ > 0.28) {
             headTilt.target = bodyTilt.target * 0.45f + headYaw.value * (0.11f + hunt * 0.05f) - headYaw.value * headPitch.value * 0.04f;
         }
-        if (!usingDesk()) headTilt.target = 0.115f * sleepiness + 0.21f * lift;
-        if (listening()) headTilt.target = 0.24f * sway + 0.11f * drift;
+        if (!deskActive) headTilt.target = 0.115f * sleepiness + 0.21f * lift;
+        if (musicActive) headTilt.target = 0.24f * sway + 0.11f * drift;
         float shakeAge = time - lastShake_;
-        if (settings.coatTheme == CatCoatTheme::OrcaCat && shakeAge < 0.5f) {
+        if (deskActive && shakeAge < 0.5f) {
             headTilt.velocity += dt * 115.0f * std::cos(shakeAge * 30.0f) * (1.0f - shakeAge * 2.0f);
         }
         headTilt.step(dt, 130.0f, 16.0f);
 
-        eyeGaze.setTarget(listening() ? Pt{0.16f * sway, 0.1f} :
-            (feeding() ? Pt{0.08f * lift, 0.65f * lean} : Pt{lookX * 0.88f, lookY * 0.85f}));
+        eyeGaze.setTarget(musicActive ? Pt{0.16f * sway, 0.1f} :
+            (feeding() ? Pt{0.08f * lift, 0.65f * lean} :
+            (deskActive ? Pt{lookX * 0.88f, lookY * 0.85f} : Pt{})));
         eyeGaze.step(dt, 210.0f + hunt * 80.0f, 21.0f);
 
-        if (hindFootActive.value > 0.3f) {
+        if (!deskActive) {
+            pupilScale.target = 1.0f;
+        } else if (hindFootActive.value > 0.3f) {
             pupilScale.target = 1.24f;
         } else if (now - engine.lastKeyActivityTime > 0.45 && now - engine.lastMouseClickTime > 0.45) {
             pupilScale.target = 1.0f;
@@ -776,14 +859,16 @@ public:
         }
 
         // 7. Tail wag speed
-        float kpmBoost = std::min(2.4f, (float)engine.currentKPM() / 160.0f);
+        float kpmBoost = deskActive ? std::min(2.4f, (float)engine.currentKPM() / 160.0f) : 0.0f;
         float petBoost = std::max(petHeadIntensity, petBodyIntensity) * 1.4f;
         float tailSpeed = (1.85f + kpmBoost + petBoost + hunt * 2.8f) * (1.0f - sleepiness * 0.86f);
         tailPhase += dt * tailSpeed;
 
         // 8. Keycap glow decay
         std::unordered_set<PhysicalKey> visualActive;
-        for (PhysicalKey k : activeKeys) visualActive.insert(visualKeyOf(k));
+        if (deskActive) {
+            for (PhysicalKey k : activeKeys) visualActive.insert(visualKeyOf(k));
+        }
         for (auto it = keyGlow.begin(); it != keyGlow.end(); ) {
             if (visualActive.count(it->first)) {
                 it->second = 1.0f;
@@ -818,7 +903,14 @@ public:
     }
 
 private:
-    bool manualSleep_ = false;
+    static constexpr float workLimit_ = 25.0f * 60.0f;
+    float workSeconds_ = 0.0f;
+    double idleRestSince_ = -1.0;
+    double typingSince_ = -1.0;
+    float tailImpatience_ = 0.0f;
+    float tailSlapTime_ = 0.0f;
+    bool bellyHovered_ = false;
+    bool sleeping_ = false;
     bool listening_ = false;
     float headsetFit_ = 0.0f;
     float musicEyes_ = 0.0f;
@@ -826,19 +918,35 @@ private:
     float previousPulse_ = 0.0f;
     float musicSide_ = 1.0f;
     float treatAge_ = -1.0f;
+    float bowlScoldUntil_ = 0.0f;
+    float turnAway_ = 0.0f;
+    float turnProgress_ = 0.0f;
+    float turnScoldTime_ = -2.0f;
+    double turnStarts_ = 0.0;
+    double ignoreUntil_ = 0.0;
     float breathPhase_ = 0.0f;
+
+    void flattenEars() {
+        airplaneUntil_ = time + 0.65f;
+        annoyedUntil_ = time + 2.4f;
+        petHeadIntensity = petBodyIntensity = 0.0f;
+    }
 
     void clearDeskPose() {
         penDown = false;
         latestTabletKey = -1;
         for (auto& key : tabletKeys) key.held = false;
-        mousePressLeft.target = mousePressRight.target = 0.0f;
+        mouseOffset = Spring2D{};
+        mousePressLeft = mousePressRight = Spring1D{};
+        keyGlow.clear();
+        recentLeftKey_ = recentRightKey_ = PhysicalKey::None;
+        hasLastTypedPoint_ = false;
         huntIntensity.target = 0.0f;
         petHeadIntensity = petBodyIntensity = 0.0f;
         floatingKeycaps.clear();
     }
 
-    Spring1D orcaAngle_[2]{Spring1D(0.22f), Spring1D(0.22f)};
+    Spring1D earAngles_[2]{Spring1D(0.22f), Spring1D(0.22f)};
     Spring1D earFlick_[2];
     float airplaneUntil_ = -1.0f, annoyedUntil_ = -1.0f;
     float lastEarTouch_ = -10.0f, lastShake_ = -10.0f;
