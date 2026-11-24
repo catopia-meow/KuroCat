@@ -135,7 +135,7 @@ else
     echo "==> Signing ad-hoc (no Apple Development cert found)"
     codesign --force --deep --sign - "$APP_BUNDLE"
 fi
-lipo -verify_arch arm64 x86_64 "$MACOS_DIR/$APP_NAME"
+lipo "$MACOS_DIR/$APP_NAME" -verify_arch arm64 x86_64
 codesign --verify --deep --strict "$APP_BUNDLE"
 
 echo "==> Built successfully: $APP_BUNDLE"

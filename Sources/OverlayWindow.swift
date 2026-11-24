@@ -95,7 +95,11 @@ final class CatCanvasView: NSView {
             if hover != nil { toolTip = nil }
             hover = nil
         }
-        physics.overControl = hover != nil
+        if case .tabletKey = zone {
+            physics.overControl = unlocked
+        } else {
+            physics.overControl = hover != nil
+        }
         physics.setBellyHovered(settings.petInteraction && zone == .belly)
         if zone == .desk { physics.stopPetting() }
 
@@ -163,6 +167,10 @@ final class CatCanvasView: NSView {
             if zone == .bowl {
                 if event.clickCount >= 2 { onBowlTaken?() }
                 physics.clickBowl(take: event.clickCount >= 2)
+                return
+            }
+            if case let .tabletKey(slot) = zone, !event.modifierFlags.contains(.option) {
+                physics.triggerKeyDown(physics.tabletKeys[slot])
                 return
             }
             if (physics.sleeping || physics.listening) && !event.modifierFlags.contains(.option) {

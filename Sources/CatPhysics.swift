@@ -376,7 +376,7 @@ final class CatPhysics {
     }
 
     func resumeFromInput(_ time: CFTimeInterval) {
-        guard let idleRestSince, time > idleRestSince, time - idleRestSince < 300, !ignoring else { return }
+        guard let idleRestSince, time > idleRestSince, time - idleRestSince <= 300, !ignoring else { return }
         if listening { onAutoWake?() }
         listen(false)
         wake()
@@ -1045,7 +1045,7 @@ final class CatPhysics {
         } else {
             typingSince = nil
         }
-        let impatient = typingSince.map { now - $0 >= 60 } == true
+        let impatient = typingSince.map { now - $0 > 60 } == true
         tailImpatience += ((impatient ? 1 : 0) - tailImpatience) * min(1, dt * 6)
         let kpmBoost = desk ? min(2.4, CGFloat(engine.currentKPM) / 160.0) : 0
         let petBoost = max(petHeadIntensity, petBodyIntensity) * 1.4

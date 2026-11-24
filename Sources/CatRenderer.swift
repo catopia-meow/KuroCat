@@ -12,6 +12,7 @@ enum CatHitZone: Equatable {
     case desk
     case bowl
     case control(PetAction)
+    case tabletKey(Int)
     case permissionPill
 }
 
@@ -83,7 +84,10 @@ enum CatRenderer {
             return .head
         }
 
-        if physics.tabletMode && p.y >= 229 { return .none }
+        if physics.tabletMode && p.y >= 229 {
+            if physics.usingDesk, let slot = physics.tabletKeyIndex(at: p) { return .tabletKey(slot) }
+            return .none
+        }
         if !physics.tabletMode && !physics.sleeping && CGRect(x: 72, y: 236, width: 228, height: 62).contains(p) {
             return .desk
         }
