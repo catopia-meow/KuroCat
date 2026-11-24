@@ -31,6 +31,7 @@ final class InputEngine {
     private(set) var lastMouseMoveTime: CFTimeInterval = 0
     private(set) var lastMouseClickTime: CFTimeInterval = 0
     private(set) var lastKeyActivityTime: CFTimeInterval = 0
+    private(set) var lastKeyReleaseTime: CFTimeInterval = 0
     private(set) var lastMouseLocation: CGPoint = NSEvent.mouseLocation
     private(set) var mouseVelocity: CGVector = .zero
 
@@ -437,6 +438,7 @@ final class InputEngine {
             pressedOrder.append(key)
             onKeyDown?(key)
         } else if wasActive && !isNowActive {
+            lastKeyReleaseTime = CACurrentMediaTime()
             pressedOrder.removeAll { $0 == key }
             onKeyUp?(key)
         }

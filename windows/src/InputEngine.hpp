@@ -29,6 +29,7 @@ public:
     double lastMouseMoveTime = 0.0;
     double lastMouseClickTime = 0.0;
     double lastKeyActivityTime = 0.0;
+    double lastKeyReleaseTime = 0.0;
 
     POINT lastCursorPos = { 0, 0 };
     Pt mouseVelocity = { 0.0f, 0.0f };
@@ -43,7 +44,7 @@ public:
     std::function<void(int, bool)> onMouseClick;
 
     double lastActivity() const {
-        return std::max({lastMouseMoveTime, lastMouseClickTime, lastKeyActivityTime});
+        return std::max({lastMouseMoveTime, lastMouseClickTime, lastKeyActivityTime, lastKeyReleaseTime});
     }
 
     bool activelyUsed(double now) const {
@@ -275,6 +276,7 @@ private:
             totalKeystrokesToday++;
             if (onKeyDown) onKeyDown(key);
         } else if (!isNowActive && wasActive) {
+            lastKeyReleaseTime = nowSeconds();
             activeKeys.erase(key);
             pressedOrder.erase(std::remove(pressedOrder.begin(), pressedOrder.end(), key), pressedOrder.end());
             if (onKeyUp) onKeyUp(key);

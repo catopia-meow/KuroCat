@@ -158,9 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let engine = InputEngine.shared
             if now >= self.nextClockCheck {
                 self.nextClockCheck = now + 1
-                let last = max(engine.lastKeyActivityTime, max(engine.lastMouseMoveTime, engine.lastMouseClickTime))
-                let working = !engine.activeKeys.isEmpty || engine.leftMouseDown || engine.rightMouseDown || now - last < 2
-                physics.observeClock(Date(), working: working)
+                physics.observeClock(Date())
             }
             if now >= self.nextDeskCheck && CatSettings.shared.deskMode == .automatic {
                 self.nextDeskCheck = now + 0.5

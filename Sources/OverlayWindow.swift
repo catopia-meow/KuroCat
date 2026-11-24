@@ -273,11 +273,17 @@ final class OverlayWindow: NSPanel {
 
     init() {
         let scale = CatSettings.shared.scale
+        let baseSize = CGSize(width: CatPhysics.canvasSize.width * scale, height: CatPhysics.canvasSize.height * scale)
         let size = CGSize(
-            width: CatPhysics.canvasSize.width * scale,
-            height: CatPhysics.canvasSize.height * scale
+            width: baseSize.width,
+            height: CatCanvasView.logicalHeight * scale
         )
-        let origin = OverlayWindow.initialOrigin(for: size)
+        var origin = OverlayWindow.initialOrigin(for: baseSize)
+        if CatSettings.shared.showControls {
+            let baseFrame = CGRect(origin: origin, size: baseSize)
+            let lowerEdge = NSScreen.screens.first { $0.frame.intersects(baseFrame) }?.visibleFrame.minY ?? origin.y
+            origin.y = max(lowerEdge, baseFrame.maxY - size.height)
+        }
 
         super.init(
             contentRect: CGRect(origin: origin, size: size),
@@ -286,6 +292,7 @@ final class OverlayWindow: NSPanel {
             defer: false
         )
 
+        title = "KuroCat"
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false

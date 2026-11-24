@@ -74,7 +74,9 @@ enum PetAction: Int, CaseIterable {
 
 final class CatSettings {
     static let shared = CatSettings()
-    var showControls = false
+    var showControls: Bool {
+        didSet { UserDefaults.standard.set(showControls, forKey: "KuroCat.ControlsVisible") }
+    }
     var doubleClickWake: Bool {
         didSet { UserDefaults.standard.set(doubleClickWake, forKey: "KuroCat.DoubleClickWake") }
     }
@@ -118,10 +120,11 @@ final class CatSettings {
 
     private init() {
         let d = UserDefaults.standard
+        showControls = d.bool(forKey: "KuroCat.ControlsVisible")
         doubleClickWake = d.object(forKey: "KuroCat.DoubleClickWake") as? Bool ?? true
         deskMode = (d.object(forKey: "KuroCat.DeskMode") as? Int).flatMap(DeskMode.init(rawValue:)) ?? .automatic
         showKeyBadges = d.object(forKey: "KuroCat.ShowKeyBadges") as? Bool ?? true
-        showMouseBadges = d.object(forKey: "KuroCat.ShowMouseBadges") as? Bool ?? true
+        showMouseBadges = d.bool(forKey: "KuroCat.ShowMouseBadges")
         showKeyLegends = d.object(forKey: "KuroCat.ShowKeyLegends") as? Bool ?? true
         footEasterEgg = d.object(forKey: "KuroCat.FootEasterEgg") as? Bool ?? true
         petInteraction = d.object(forKey: "KuroCat.PetInteraction") as? Bool ?? true
@@ -290,6 +293,8 @@ final class CatPhysics {
     private(set) var listening = false
     private(set) var treatAge: CGFloat = -1
     static let bowlEnd: CGFloat = 2.86
+    static let mealIdleSeconds: CFTimeInterval = 10
+    private var mealSeconds: CGFloat = 10
     static let idleSeconds: CFTimeInterval = 45
     private var workTime: CFTimeInterval = 0
     private var restStarted: CFTimeInterval = 0
@@ -306,8 +311,7 @@ final class CatPhysics {
     private var bellyHovered = false
     private var routineStarted = CACurrentMediaTime()
     private var lastHour: Date?
-    private var mealPending = false
-    private var waitsForIdle = false
+    private var pendingMeals = 0
     private var airplaneUntil: CGFloat = 0
     private var angryUntil: CGFloat = 0
     private var scoldUntil: CGFloat = 0
@@ -316,7 +320,7 @@ final class CatPhysics {
     private(set) var turn: CGFloat = 0
     private var turnProgress: CGFloat = 0
     private var turnScoldTime: CGFloat = -2
-    private var backPokes = 0
+    private var furPuffTarget: CGFloat = 0
     private var backPuffUntil: CFTimeInterval = 0
     private(set) var furPuff: CGFloat = 0
     private var furPulseStarted: CGFloat = -2
@@ -421,17 +425,21 @@ final class CatPhysics {
 
     func pokeBack() {
         let now = CACurrentMediaTime()
-        if now >= backPuffUntil { backPokes = 0 }
-        backPuffUntil = now + 5
-        backPokes = min(backPokes + 1, 6)
-        if backPokes > 1 { furPulseStarted = time }
+        let continuing = now < backPuffUntil
+        if !continuing { furPuffTarget = furPuff }
+        if continuing || furPuffTarget > 0 {
+            furPuffTarget = min(1, furPuffTarget + 0.2)
+            furPulseStarted = time
+        }
+        backPuffUntil = now + 2
         bodySquash.velocity = -2.8
         headOffsetY.velocity = 310
     }
 
     func offerTreat() {
         guard canPerform(.treat) else { return }
-        mealPending = false
+        mealSeconds = 10 + 5 * CGFloat(max(0, pendingMeals - 1))
+        pendingMeals = 0
         treatAge = 0
         scoldUntil = 0
         sparkles.removeAll { $0.isSleepZ }
@@ -478,7 +486,7 @@ final class CatPhysics {
         flattenEars()
         if take {
             turnScoldTime = time
-            backPokes = 0
+            backPuffUntil = 0
             airplaneUntil = time + 0.91
             treatAge = -1
             turnStarts = CACurrentMediaTime() + 0.58
@@ -568,12 +576,11 @@ final class CatPhysics {
         petBodyIntensity = 0
     }
 
-    func observeClock(_ date: Date, working: Bool) {
+    func observeClock(_ date: Date) {
         guard let hour = Calendar.current.dateInterval(of: .hour, for: date)?.start,
               lastHour != hour else { return }
-        if lastHour != nil && Calendar.current.component(.minute, from: date) == 0 && !feeding {
-            mealPending = true
-            waitsForIdle = working
+        if lastHour != nil && Calendar.current.component(.minute, from: date) == 0 {
+            pendingMeals += 1
         }
         lastHour = hour
     }
@@ -586,23 +593,22 @@ final class CatPhysics {
                                lastInput: CFTimeInterval, working: Bool, automatic: Bool) {
         if ignoringUntil > 0 && now >= ignoringUntil {
             ignoringUntil = 0
-            backPokes = 0
+            backPuffUntil = 0
             routineStarted = now
         }
         let target: CGFloat = ignoringUntil > 0 && now >= turnStarts ? 1 : 0
         turnProgress += min(dt / 0.84, max(-dt / 0.84, target - turnProgress))
         turn = Self.ease(turnProgress)
-        if now >= backPuffUntil { backPokes = 0 }
-        let puffTarget = CGFloat(max(0, backPokes - 1)) / 5
-        furPuff += min(dt * 4.5, max(-dt * 2.8, puffTarget - furPuff))
+        let puffTarget = now < backPuffUntil ? furPuffTarget : 0
+        furPuff += min(dt * 4.5, max(-dt, puffTarget - furPuff))
         if feeding && time >= scoldUntil {
-            treatAge += bowlVisible ? dt * 0.5 : dt
+            treatAge += bowlVisible ? dt * Self.bowlEnd / mealSeconds : dt
             if treatAge >= 5.24 {
                 treatAge = -1
                 routineStarted = now
             }
         }
-        if mealPending && !working && (!waitsForIdle || now - lastInput >= Self.idleSeconds) && canPerform(.treat) {
+        if pendingMeals > 0 && !working && now - lastInput >= Self.mealIdleSeconds {
             offerTreat()
         }
         guard automatic, usingDesk else { return }
@@ -820,8 +826,10 @@ final class CatPhysics {
             }
         }
 
-        let lastInput = max(curLastKeyTime, max(curLastMouseMove, curLastMouseClick))
-        let working = !activeKeys.isEmpty || curLeftMouse || curRightMouse || (lastInput > 0 && now - lastInput < 2)
+        let lastKeyRelease = scripted == nil ? engine.lastKeyReleaseTime : 0
+        let lastInput = max(max(curLastKeyTime, lastKeyRelease), max(curLastMouseMove, curLastMouseClick))
+        let otherMouseHeld = scripted == nil && engine.otherMouseDown
+        let working = !activeKeys.isEmpty || curLeftMouse || curRightMouse || otherMouseHeld || (lastInput > 0 && now - lastInput < 2)
         updateRoutine(now: now, dt: dt, rawDt: rawDt, lastInput: lastInput, working: working, automatic: scripted == nil)
         let desk = usingDesk
         let music = listening && !feeding
@@ -840,7 +848,7 @@ final class CatPhysics {
         let pulse = music && soundPlaying ? soundPulse : 0
         let sway = sin(time * 5) * (0.72 * pulse + 0.28 * musicEyes)
         let lean = feeding && time >= scoldUntil ? Self.ease((treatAge - 0.25) / 0.55) * Self.ease((2.73 - treatAge) / 0.49) : 0
-        let bite = lean * (0.5 - 0.5 * cos(max(0, treatAge - 0.8) * 13.1))
+        let bite = lean * (0.5 - 0.5 * cos(time * 6.55))
         let lift = washLift
         let wipe = Self.ease((treatAge - 3.31) / 0.25) * (0.5 - 0.5 * cos((treatAge - 3.31) * 11.5))
         let mouseSpeed = hypot(curMouseVel.dx, curMouseVel.dy)

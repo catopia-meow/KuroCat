@@ -36,10 +36,10 @@ enum class EyeColorTheme : int {
 enum class DeskMode { Keyboard, Tablet, Auto };
 
 struct CatSettings {
-    bool tabletMode = true;
+    bool tabletMode = false;
     bool autoDeskMode = true;
     bool showKeyBadges = true;
-    bool showMouseBadges = true;
+    bool showMouseBadges = false;
     bool showControls = false;
     bool doubleClickWake = true;
     bool showKeyLegends = true;
@@ -67,20 +67,21 @@ struct CatSettings {
             if (RegQueryValueExW(hKey, name, nullptr, nullptr, (LPBYTE)&val, &sz) == ERROR_SUCCESS) return val;
             return defVal;
         };
-        autoDeskMode = readDword(L"AutoDeskMode", 1) != 0;
-        tabletMode = readDword(L"TabletMode", 1) != 0;
-        showKeyBadges    = readDword(L"ShowKeyBadges", 1) != 0;
-        showMouseBadges  = readDword(L"ShowMouseBadges", 1) != 0;
-        doubleClickWake  = readDword(L"DoubleClickWake", 1) != 0;
-        showKeyLegends   = readDword(L"ShowKeyLegends", 1) != 0;
-        footEasterEgg    = readDword(L"FootEasterEgg", 1) != 0;
-        petInteraction   = readDword(L"PetInteraction", 1) != 0;
-        fullClickThrough = readDword(L"FullClickThrough", 0) != 0;
-        alwaysOnTop      = readDword(L"AlwaysOnTop", 1) != 0;
-        runAsAdmin       = readDword(L"RunAsAdmin", 0) != 0;
-        scale            = std::clamp((float)readDword(L"ScalePct", 100) / 100.0f, 0.5f, 2.0f);
+        autoDeskMode     = readDword(L"AutoDeskMode", autoDeskMode) != 0;
+        tabletMode       = readDword(L"TabletMode", tabletMode) != 0;
+        showKeyBadges    = readDword(L"ShowKeyBadges", showKeyBadges) != 0;
+        showMouseBadges  = readDword(L"ShowMouseBadges", showMouseBadges) != 0;
+        showControls     = readDword(L"ControlsVisible", showControls) != 0;
+        doubleClickWake  = readDword(L"DoubleClickWake", doubleClickWake) != 0;
+        showKeyLegends   = readDword(L"ShowKeyLegends", showKeyLegends) != 0;
+        footEasterEgg    = readDword(L"FootEasterEgg", footEasterEgg) != 0;
+        petInteraction   = readDword(L"PetInteraction", petInteraction) != 0;
+        fullClickThrough = readDword(L"FullClickThrough", fullClickThrough) != 0;
+        alwaysOnTop      = readDword(L"AlwaysOnTop", alwaysOnTop) != 0;
+        runAsAdmin       = readDword(L"RunAsAdmin", runAsAdmin) != 0;
+        scale            = std::clamp((float)readDword(L"ScalePct", (DWORD)(scale * 100.0f)) / 100.0f, 0.5f, 2.0f);
         coatTheme        = (CatCoatTheme)std::clamp((int)readDword(L"CoatTheme", (DWORD)coatTheme), 0, (int)CatCoatTheme::OrcaCat);
-        keyboardTheme    = (KeyboardTheme)std::clamp((int)readDword(L"KeyboardTheme", 0), 0, 2);
+        keyboardTheme    = (KeyboardTheme)std::clamp((int)readDword(L"KeyboardTheme", (DWORD)keyboardTheme), 0, 2);
         eyeTheme         = (EyeColorTheme)std::clamp((int)readDword(L"EyeTheme", (DWORD)eyeTheme), 0, 5);
         DWORD hasPos     = readDword(L"HasPos", 0);
         if (hasPos) {
@@ -100,6 +101,7 @@ struct CatSettings {
         if (!autoDeskMode) writeDword(L"TabletMode", tabletMode);
         writeDword(L"ShowKeyBadges", showKeyBadges ? 1 : 0);
         writeDword(L"ShowMouseBadges", showMouseBadges ? 1 : 0);
+        writeDword(L"ControlsVisible", showControls);
         writeDword(L"DoubleClickWake", doubleClickWake);
         writeDword(L"ShowKeyLegends", showKeyLegends ? 1 : 0);
         writeDword(L"FootEasterEgg", footEasterEgg ? 1 : 0);
@@ -176,6 +178,7 @@ public:
     static constexpr Pt HindFootRest    = { 214.0f, 234.0f };
     static constexpr Pt MouseBaseCenter = { 78.0f, 258.0f };
     static constexpr float BowlEnd = 2.86f;
+    static constexpr double MealIdleSeconds = 10.0;
     static constexpr float IdleSeconds = 45.0f;
 
     Spring2D leftPaw{LeftPawRest};
@@ -272,10 +275,13 @@ public:
 
     void pokeBack() {
         const double now = nowSeconds();
-        if (now >= backPuffUntil_) backPokes_ = 0;
-        backPuffUntil_ = now + 5.0;
-        backPokes_ = std::min(backPokes_ + 1, 6);
-        if (backPokes_ > 1) furPulseStarted_ = time;
+        const bool continuing = now < backPuffUntil_;
+        if (!continuing) furPuffTarget_ = furPuff_;
+        if (continuing || furPuffTarget_ > 0.0f) {
+            furPuffTarget_ = std::min(1.0f, furPuffTarget_ + 0.2f);
+            furPulseStarted_ = time;
+        }
+        backPuffUntil_ = now + 2.0;
         bodySquash.velocity = -2.8f;
         headOffsetY.velocity = 310.0f;
     }
@@ -289,9 +295,10 @@ public:
             [](const PurrSparkle& particle) { return particle.isSleepZ; }), sparkles.end());
     }
 
-    void offerTreat() {
+    void offerTreat(int extraMeals = 0) {
         if (feeding() || ignoring()) return;
         treatAge_ = 0.0f;
+        mealSeconds_ = 10.0f + 5.0f * extraMeals;
         bowlScoldUntil_ = 0.0f;
         clearDeskPose();
         sparkles.erase(std::remove_if(sparkles.begin(), sparkles.end(),
@@ -325,7 +332,7 @@ public:
     void takeBowl() {
         flattenEars();
         turnScoldTime_ = time;
-        backPokes_ = 0;
+        backPuffUntil_ = 0.0;
         airplaneUntil_ = time + 0.91f;
         treatAge_ = -1.0f;
         turnStarts_ = nowSeconds() + 0.58;
@@ -558,18 +565,17 @@ public:
         double now = nowSeconds();
         if (ignoreUntil_ > 0.0 && now >= ignoreUntil_) {
             ignoreUntil_ = 0.0;
-            backPokes_ = 0;
+            backPuffUntil_ = 0.0;
             lastPetTime_ = now;
         }
         const bool sulking = ignoring(now);
         const float turnTarget = sulking && now >= turnStarts_ ? 1.0f : 0.0f;
         turnProgress_ += std::clamp(turnTarget - turnProgress_, -dt / 0.84f, dt / 0.84f);
         turnAway_ = ease(turnProgress_);
-        if (now >= backPuffUntil_) backPokes_ = 0;
-        const float puffTarget = std::max(0, backPokes_ - 1) / 5.0f;
-        furPuff_ += std::clamp(puffTarget - furPuff_, -dt * 2.8f, dt * 4.5f);
+        const float puffTarget = now < backPuffUntil_ ? furPuffTarget_ : 0.0f;
+        furPuff_ += std::clamp(puffTarget - furPuff_, -dt, dt * 4.5f);
         if (feeding() && time >= bowlScoldUntil_) {
-            treatAge_ += bowlVisible() ? dt * 0.5f : dt;
+            treatAge_ += bowlVisible() ? dt * BowlEnd / mealSeconds_ : dt;
             if (treatAge_ >= 5.24f) {
                 treatAge_ = -1.0f;
                 lastPetTime_ = nowSeconds();
@@ -634,7 +640,7 @@ public:
         }
         float lean = feeding() && time >= bowlScoldUntil_
             ? ease((treatAge_ - 0.25f) / 0.55f) * ease((2.73f - treatAge_) / 0.49f) : 0.0f;
-        float bites = lean * (0.5f - 0.5f * std::cos(std::max(0.0f, treatAge_ - 0.8f) * 13.1f));
+        float bites = lean * (0.5f - 0.5f * std::cos(time * 6.55f));
         float lift = washLift();
         float wipe = ease((treatAge_ - 3.31f) / 0.25f) * (0.5f - 0.5f * std::cos((treatAge_ - 3.31f) * 11.5f));
 
@@ -964,11 +970,12 @@ private:
     float previousPulse_ = 0.0f;
     float musicSide_ = 1.0f;
     float treatAge_ = -1.0f;
+    float mealSeconds_ = 10.0f;
     float bowlScoldUntil_ = 0.0f;
     float turnAway_ = 0.0f;
     float turnProgress_ = 0.0f;
     float turnScoldTime_ = -2.0f;
-    int backPokes_ = 0;
+    float furPuffTarget_ = 0.0f;
     double backPuffUntil_ = 0.0;
     float furPuff_ = 0.0f;
     float furPulseStarted_ = -2.0f;

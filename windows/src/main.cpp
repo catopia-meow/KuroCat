@@ -138,8 +138,7 @@ struct AppState {
 
     int openedUpdateRelease = 0;
     int observedMealHour = 0;
-    bool mealPending = false;
-    bool mealWaitsForIdle = false;
+    int pendingMeals = 0;
 
     // Robustness against games, Win+L, sleep and display changes
     double nextFrameTime = 0.0;
@@ -503,10 +502,7 @@ void housekeeping(AppState& app) {
     if (!app.hwnd) return;
     SYSTEMTIME local{};
     GetLocalTime(&local);
-    if (hourlyMealDue(local, app.observedMealHour) && !app.physics.feeding()) {
-        app.mealPending = true;
-        app.mealWaitsForIdle = app.input.activelyUsed(now);
-    }
+    if (hourlyMealDue(local, app.observedMealHour)) ++app.pendingMeals;
 
     // Rendering stalled for >2s while visible (e.g. the layered window lost its surface): self-heal.
     if (app.isVisible && app.lastRenderTime > 0.0 && now - app.lastRenderTime > 2.0) {
@@ -724,9 +720,15 @@ bool breakIsMusic(WORD hour, bool preferred) {
     return daytime != preferred;
 }
 
-bool mealReady(bool pending, bool waitsForIdle, const InputEngine& input, double now) {
-    return pending && !input.activelyUsed(now) &&
-           (!waitsForIdle || now - input.lastActivity() >= CatPhysics::IdleSeconds);
+bool mealReady(int pendingMeals, const InputEngine& input, double now) {
+    return pendingMeals > 0 && !input.activelyUsed(now) &&
+           now - input.lastActivity() >= CatPhysics::MealIdleSeconds;
+}
+
+void startMeal(AppState& app) {
+    if (app.physics.feeding() || app.physics.ignoring()) return;
+    app.physics.offerTreat(std::max(0, app.pendingMeals - 1));
+    app.pendingMeals = 0;
 }
 
 void runCommand(AppState& app, UINT cmd) {
@@ -776,8 +778,7 @@ void runCommand(AppState& app, UINT cmd) {
             app.settings.saveToRegistry();
             break;
         case CMD_TREAT:
-            app.mealPending = false;
-            app.physics.offerTreat();
+            startMeal(app);
             if (!app.isVisible) {
                 app.isVisible = true;
                 ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
@@ -786,6 +787,7 @@ void runCommand(AppState& app, UINT cmd) {
         case CMD_TOGGLE_CONTROLS:
             app.settings.showControls = !app.settings.showControls;
             applyWindowScaleAndPosition(app, false);
+            app.settings.saveToRegistry();
             break;
         case CMD_TOGGLE_VISIBLE:
             app.isVisible = !app.isVisible;
@@ -988,11 +990,7 @@ void tickAndRender(AppState& app) {
     }
 
     bool overControl = hover != PetControl::None || app.heldControl != PetControl::None;
-    if (!app.physics.ignoring() && !app.physics.feeding() &&
-        mealReady(app.mealPending, app.mealWaitsForIdle, app.input, now)) {
-        app.mealPending = false;
-        app.physics.offerTreat();
-    }
+    if (mealReady(app.pendingMeals, app.input, now)) startMeal(app);
     if (app.physics.breakDue(dt, app.input, now, overControl)) {
         SYSTEMTIME local{};
         GetLocalTime(&local);
@@ -1559,7 +1557,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         computeDefaultOrigin(initW, initH, initX, initY);
     }
 
-    DWORD exStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT
+    // OBS excludes tool windows even when they are visible.
+    DWORD exStyle = WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT
                   | (app.settings.alwaysOnTop ? WS_EX_TOPMOST : 0);
 
     app.hwnd = CreateWindowExW(
