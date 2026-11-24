@@ -90,7 +90,9 @@ enum MenuCmd : UINT {
     CMD_TREAT,
     CMD_TOGGLE_CONTROLS,
     CMD_MUSIC,
-    CMD_TOGGLE_DOUBLE_CLICK_WAKE
+    CMD_TOGGLE_DOUBLE_CLICK_WAKE,
+    CMD_CAPTURE_TRANSPARENT,
+    CMD_CAPTURE_GREEN
 };
 
 enum class ClickTarget { None, RestingHead, RestingBody, SulkingCat, Bowl };
@@ -554,6 +556,24 @@ void setClickThrough(HWND hwnd, bool transparent) {
     }
 }
 
+void setGreenScreenCapture(AppState& app, bool enabled) {
+    if (enabled == app.settings.greenScreenCapture) return;
+    if (enabled) {
+        if (!SetLayeredWindowAttributes(app.hwnd, 0, 255, LWA_ALPHA)) {
+            showTrayBalloon(app, L"KuroCat 直播采集", L"无法启用绿幕窗口。");
+            return;
+        }
+    } else {
+        // UpdateLayeredWindow can resume only after the system resets the layered style.
+        const LONG_PTR ex = GetWindowLongPtrW(app.hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(app.hwnd, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
+        SetWindowLongPtrW(app.hwnd, GWL_EXSTYLE, ex);
+    }
+    app.settings.greenScreenCapture = enabled;
+    app.settings.saveToRegistry();
+    app.nextFrameTime = 0.0;
+}
+
 Pt canvasPoint(POINT local, const RECT& bounds, const CatSettings& settings) {
     return {local.x * CatPhysics::CanvasWidth / std::max(1L, bounds.right - bounds.left),
             local.y * CatRenderer::canvasHeight(settings) / std::max(1L, bounds.bottom - bounds.top)};
@@ -619,6 +639,12 @@ void showContextMenu(AppState& app, POINT screenPt) {
     UINT musicFlags = actionFlags | (app.physics.listening() ? MF_CHECKED : 0) | (app.physics.resting() ? MF_GRAYED : 0);
     AppendMenuW(menu, MF_STRING | musicFlags, CMD_MUSIC, L"听音乐");
     AppendMenuW(menu, MF_STRING, CMD_TOGGLE_CONTROLS, app.settings.showControls ? L"隐藏控件" : L"显示控件");
+    HMENU captureMenu = CreatePopupMenu();
+    AppendMenuW(captureMenu, MF_STRING | (app.settings.greenScreenCapture ? 0 : MF_CHECKED),
+                CMD_CAPTURE_TRANSPARENT, L"透明窗口（WGC）");
+    AppendMenuW(captureMenu, MF_STRING | (app.settings.greenScreenCapture ? MF_CHECKED : 0),
+                CMD_CAPTURE_GREEN, L"绿幕窗口（色度键）");
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)captureMenu, L"直播采集");
     AppendMenuW(menu, MF_STRING | (app.settings.fullClickThrough ? MF_CHECKED : 0), CMD_TOGGLE_CLICKTHROUGH, L"\u5B8C\u5168\u9F20\u6807\u7A7F\u900F (Ctrl+Alt+Shift+P / \u6309\u4F4FAlt\u53EF\u53F3\u952E)");
     AppendMenuW(menu, MF_STRING | (app.settings.alwaysOnTop ? MF_CHECKED : 0), CMD_TOGGLE_TOPMOST, L"\u7A97\u53E3\u7F6E\u9876\u663E\u793A");
     AppendMenuW(menu, MF_STRING | (isAutoStartEnabled() ? MF_CHECKED : 0), CMD_TOGGLE_AUTOSTART, L"\u5F00\u673A\u81EA\u52A8\u542F\u52A8");
@@ -788,6 +814,10 @@ void runCommand(AppState& app, UINT cmd) {
             app.settings.showControls = !app.settings.showControls;
             applyWindowScaleAndPosition(app, false);
             app.settings.saveToRegistry();
+            break;
+        case CMD_CAPTURE_TRANSPARENT:
+        case CMD_CAPTURE_GREEN:
+            setGreenScreenCapture(app, cmd == CMD_CAPTURE_GREEN);
             break;
         case CMD_TOGGLE_VISIBLE:
             app.isVisible = !app.isVisible;
@@ -1064,17 +1094,23 @@ void tickAndRender(AppState& app) {
         if (!cursorCaptured) resumeFromInput(app, app.observedMouseActivity);
     }
 
-    // Render 32-bit Premultiplied ARGB frame directly into DIB and present via UpdateLayeredWindow
     app.ensureBuffer(w, h);
     if (!app.memDC || !app.dibBits) return;
 
-    Gdiplus::Bitmap bmp(w, h, w * 4, PixelFormat32bppPARGB, static_cast<BYTE*>(app.dibBits));
-    Gdiplus::Graphics g(&bmp);
-    g.Clear(Gdiplus::Color(0, 0, 0, 0));
-    g.ScaleTransform((float)w / CatPhysics::CanvasWidth, (float)h / CatRenderer::canvasHeight(app.settings));
-    CatRenderer::draw(g, app.physics, app.settings);
-    if (app.settings.showControls) {
-        CatRenderer::drawControls(g, app.physics, app.settings, hover, app.heldControl, now - app.controlHoverSince > 0.46);
+    {
+        Gdiplus::Bitmap bmp(w, h, w * 4, PixelFormat32bppPARGB, static_cast<BYTE*>(app.dibBits));
+        Gdiplus::Graphics g(&bmp);
+        g.Clear(app.settings.greenScreenCapture ? Gdiplus::Color(255, 0, 255, 0) : Gdiplus::Color(0, 0, 0, 0));
+        g.ScaleTransform((float)w / CatPhysics::CanvasWidth, (float)h / CatRenderer::canvasHeight(app.settings));
+        CatRenderer::draw(g, app.physics, app.settings);
+        if (app.settings.showControls) {
+            CatRenderer::drawControls(g, app.physics, app.settings, hover, app.heldControl, now - app.controlHoverSince > 0.46);
+        }
+    }
+    if (app.settings.greenScreenCapture) {
+        // BitBlt capture reads the redirected client area, which UpdateLayeredWindow does not paint.
+        RedrawWindow(app.hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        return;
     }
 
     POINT ptDst = { wr.left, wr.top };
@@ -1110,6 +1146,17 @@ void renderIfDue(AppState& app) {
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     AppState* app = g_app;
     switch (msg) {
+        case WM_PAINT:
+        case WM_PRINTCLIENT:
+            if (app && hwnd == app->hwnd && app->settings.greenScreenCapture) {
+                PAINTSTRUCT paint{};
+                HDC dc = msg == WM_PAINT ? BeginPaint(hwnd, &paint) : reinterpret_cast<HDC>(wParam);
+                if (app->memDC) BitBlt(dc, 0, 0, app->bufW, app->bufH, app->memDC, 0, 0, SRCCOPY);
+                if (msg == WM_PAINT) EndPaint(hwnd, &paint);
+                return 0;
+            }
+            break;
+
         case WM_INPUT:
             if (app) app->input.handleRawInput(lParam);
             return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -1577,6 +1624,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         return 1;
     }
 
+    if (app.settings.greenScreenCapture && !SetLayeredWindowAttributes(app.hwnd, 0, 255, LWA_ALPHA)) {
+        app.settings.greenScreenCapture = false;
+    }
     applyWindowScaleAndPosition(app, false);
     app.input.registerRawInput(app.hwnd);
     setTrayPortrait(app, NIM_ADD);

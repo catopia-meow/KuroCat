@@ -41,6 +41,7 @@ struct CatSettings {
     bool showKeyBadges = true;
     bool showMouseBadges = false;
     bool showControls = false;
+    bool greenScreenCapture = false;
     bool doubleClickWake = true;
     bool showKeyLegends = true;
     bool footEasterEgg = true;
@@ -72,6 +73,7 @@ struct CatSettings {
         showKeyBadges    = readDword(L"ShowKeyBadges", showKeyBadges) != 0;
         showMouseBadges  = readDword(L"ShowMouseBadges", showMouseBadges) != 0;
         showControls     = readDword(L"ControlsVisible", showControls) != 0;
+        greenScreenCapture = readDword(L"GreenScreenCapture", greenScreenCapture) != 0;
         doubleClickWake  = readDword(L"DoubleClickWake", doubleClickWake) != 0;
         showKeyLegends   = readDword(L"ShowKeyLegends", showKeyLegends) != 0;
         footEasterEgg    = readDword(L"FootEasterEgg", footEasterEgg) != 0;
@@ -102,6 +104,7 @@ struct CatSettings {
         writeDword(L"ShowKeyBadges", showKeyBadges ? 1 : 0);
         writeDword(L"ShowMouseBadges", showMouseBadges ? 1 : 0);
         writeDword(L"ControlsVisible", showControls);
+        writeDword(L"GreenScreenCapture", greenScreenCapture);
         writeDword(L"DoubleClickWake", doubleClickWake);
         writeDword(L"ShowKeyLegends", showKeyLegends ? 1 : 0);
         writeDword(L"FootEasterEgg", footEasterEgg ? 1 : 0);

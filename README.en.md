@@ -99,6 +99,11 @@ open KuroCat.app
    >
    > **Still told to update after downloading the new version?** An old copy was still running. A newer KuroCat now shuts down older running copies on launch, and the update prompt shows which exe is running.
 
+**Live capture**
+
+- Right-click the cat and select **直播采集 → 透明窗口（WGC）** (Live capture → Transparent window). In OBS, select `KuroCat` in a **Window Capture** source. Set the capture method to **Modern (WGC)** or **Windows 10 (1903 and up)**, depending on the OBS version.
+- If the capture app does not preserve transparency, select **直播采集 → 绿幕窗口（色度键）** (Live capture → Green screen). Capture the `KuroCat` window and apply a green chroma key filter (`#00FF00`). This mode works with the **Automatic** capture method in OBS.
+
 **Build from source (MSVC / MinGW):**
 ```bat
 cd windows
