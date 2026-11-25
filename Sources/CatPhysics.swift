@@ -77,6 +77,9 @@ final class CatSettings {
     var showControls: Bool {
         didSet { UserDefaults.standard.set(showControls, forKey: "KuroCat.ControlsVisible") }
     }
+    var greenScreenCapture: Bool {
+        didSet { UserDefaults.standard.set(greenScreenCapture, forKey: "KuroCat.GreenScreenCapture") }
+    }
     var doubleClickWake: Bool {
         didSet { UserDefaults.standard.set(doubleClickWake, forKey: "KuroCat.DoubleClickWake") }
     }
@@ -121,6 +124,7 @@ final class CatSettings {
     private init() {
         let d = UserDefaults.standard
         showControls = d.bool(forKey: "KuroCat.ControlsVisible")
+        greenScreenCapture = d.bool(forKey: "KuroCat.GreenScreenCapture")
         doubleClickWake = d.object(forKey: "KuroCat.DoubleClickWake") as? Bool ?? true
         deskMode = (d.object(forKey: "KuroCat.DeskMode") as? Int).flatMap(DeskMode.init(rawValue:)) ?? .automatic
         showKeyBadges = d.object(forKey: "KuroCat.ShowKeyBadges") as? Bool ?? true

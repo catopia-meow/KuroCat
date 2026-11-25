@@ -276,6 +276,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if action == .doubleClickWake { item.state = settings.doubleClickWake ? .on : .off }
             menu.addItem(item)
         }
+        let captureItem = NSMenuItem(title: "直播采集", action: nil, keyEquivalent: "")
+        let captureMenu = NSMenu()
+        for (title, selection) in [("透明窗口", 0), ("绿幕窗口（色度键）", 1)] {
+            let item = NSMenuItem(title: title, action: #selector(selectCaptureMode(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = selection
+            item.state = settings.greenScreenCapture == (selection == 1) ? .on : .off
+            captureMenu.addItem(item)
+        }
+        captureItem.submenu = captureMenu
+        menu.addItem(captureItem)
         menu.addItem(.separator())
 
         let badgesItem = NSMenuItem(title: "显示按键气泡 ([S] [W] [⇧])", action: #selector(toggleKeyBadges), keyEquivalent: "")
@@ -468,6 +479,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleClickThrough() {
         CatSettings.shared.fullClickThrough.toggle()
+    }
+
+    @objc private func selectCaptureMode(_ sender: NSMenuItem) {
+        CatSettings.shared.greenScreenCapture = sender.tag == 1
+        overlayWindow.applyCaptureMode()
     }
 
     @objc private func toggleFullScreenOverlay() {

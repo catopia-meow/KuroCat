@@ -1,6 +1,8 @@
 import Foundation
 import AppKit
 
+private let captureGreen = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: 1)
+
 final class CatCanvasView: NSView {
     private enum ClickTarget: Equatable {
         case bowl, restingHead, restingBody, sulkingCat
@@ -28,7 +30,7 @@ final class CatCanvasView: NSView {
     private var isShowingOpenHand = false
 
     override var isFlipped: Bool { true }
-    override var isOpaque: Bool { false }
+    override var isOpaque: Bool { CatSettings.shared.greenScreenCapture }
     override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     static var logicalHeight: CGFloat {
@@ -37,7 +39,13 @@ final class CatCanvasView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        ctx.clear(bounds)
+        let settings = CatSettings.shared
+        if settings.greenScreenCapture {
+            ctx.setFillColor(captureGreen.cgColor)
+            ctx.fill(bounds)
+        } else {
+            ctx.clear(bounds)
+        }
 
         let scaleX = bounds.width / CatPhysics.canvasSize.width
         let scaleY = bounds.height / Self.logicalHeight
@@ -46,7 +54,6 @@ final class CatCanvasView: NSView {
 
         let showPill = InputEngine.shared.status == .needsPermission
         CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: showPill)
-        let settings = CatSettings.shared
         if settings.showControls {
             CatRenderer.drawControls(in: ctx, physics: physics, mode: settings.deskMode,
                                      doubleClickWake: settings.doubleClickWake,
@@ -307,6 +314,14 @@ final class OverlayWindow: NSPanel {
         catView.frame = CGRect(origin: .zero, size: size)
         catView.autoresizingMask = [.width, .height]
         contentView = catView
+        applyCaptureMode()
+    }
+
+    func applyCaptureMode() {
+        let greenScreen = CatSettings.shared.greenScreenCapture
+        isOpaque = greenScreen
+        backgroundColor = greenScreen ? captureGreen : .clear
+        catView.needsDisplay = true
     }
 
     func applyWindowLevelAndBehavior() {

@@ -74,9 +74,14 @@ Download pre-built binaries from **[Releases](../../releases)** (built automatic
 
 > **This macOS update has not been tested on Mac hardware.**
 
-1. Download `KuroCat-macOS-universal.zip`, unzip it, and drag `KuroCat.app` into **Applications** (lives in the top menu bar, no Dock icon).
+1. Download [KuroCat-macOS-universal.zip](https://github.com/catopia-meow/KuroCat/releases/latest/download/KuroCat-macOS-universal.zip), unzip it, and drag `KuroCat.app` into **Applications** (lives in the top menu bar, no Dock icon).
 2. On first launch, click the bottom prompt pill to open **System Settings → Privacy & Security → Input Monitoring**, enable `KuroCat`, then click **Restart KuroCat** from the menu bar to enable global typing & gaming capture.
 3. Supports one-click **Launch at Login**. When **Full Click-Through** is enabled, use the menu bar icon or **hold `⌥ Option` and right-click / drag the cat**.
+
+**Live capture**
+
+- Right-click the cat and select **直播采集 → 透明窗口** (Live capture → Transparent window). In OBS, add a **macOS Screen Capture** source, select **Window Capture** as the method, and choose `KuroCat`. If the window is missing, enable **Show fullscreen and hidden windows / applications**.
+- If the capture app does not preserve transparency, select **直播采集 → 绿幕窗口（色度键）** (Live capture → Green screen) and apply a green chroma key filter (`#00FF00`) to the source.
 
 **Build from source:**
 ```bash

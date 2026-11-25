@@ -74,9 +74,14 @@
 
 > **本次更新的 macOS 版本尚未在 Mac 上实机测试。**
 
-1. 下载 `KuroCat-macOS-universal.zip` 解压，将 `KuroCat.app` 拖入「应用程序」打开（常驻顶部菜单栏，不占 Dock）。
+1. 下载 [KuroCat-macOS-universal.zip](https://github.com/catopia-meow/KuroCat/releases/latest/download/KuroCat-macOS-universal.zip) 解压，将 `KuroCat.app` 拖入「应用程序」打开（常驻顶部菜单栏，不占 Dock）。
 2. 首次使用点击小猫底部提示胶囊，前往 **系统设置 → 隐私与安全性 → 输入监控** 勾选 `KuroCat` 后在菜单栏点「重启 KuroCat」即可全局监听打字与游戏按键。
 3. 支持在菜单中一键开启 **开机自动启动**；开启「完全鼠标穿透」后，可通过顶部菜单栏小猫图标或 **按住 `⌥ Option` 键直接右键/拖动小猫**。
+
+**直播采集**
+
+- 右键虎鲸猫，选择「直播采集 → 透明窗口」。在 OBS 添加「macOS 屏幕采集」，将方式设为窗口采集，并选择 `KuroCat`。如果列表中没有桌宠，开启「显示全屏和隐藏的窗口/应用程序」。
+- 如果采集软件没有保留透明背景，选择「直播采集 → 绿幕窗口（色度键）」，在采集来源中添加绿色色度键滤镜（`#00FF00`）。
 
 **本地源码编译：**
 ```bash
