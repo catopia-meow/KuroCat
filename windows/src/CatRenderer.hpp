@@ -7,6 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include "CatPhysics.hpp"
+#include "DopeyCat.hpp"
 #include "../../shared/CoatPatterns.hpp"
 
 enum class CatHitZone {
@@ -47,14 +48,15 @@ public:
                              PetControl hover = PetControl::None, PetControl held = PetControl::None,
                              bool showTip = false) {
         using namespace Gdiplus;
-        const auto colors = keyboardColors(settings.keyboardTheme);
+        const auto colors = keyboardColors(settings.activeKeyboardTheme());
         GraphicsPath shell;
-        addRoundedRect(shell, 61.0f, controlTop - 3.0f, 240.0f, controlHeight + 7.0f, 6.0f);
+        const float leftEdge = 61.0f;
+        addRoundedRect(shell, leftEdge, controlTop - 3.0f, 301.0f-leftEdge, controlHeight + 7.0f, 6.0f);
         SolidBrush deck(colors.base);
         g.FillPath(&deck, &shell);
 
         const Color gold = eyePrimary(settings.eyeTheme);
-        const Color ink = settings.keyboardTheme == KeyboardTheme::MidnightHacker ? rgb(0xF0EEE8) : rgb(0x28262B);
+        const Color ink = settings.activeKeyboardTheme() == KeyboardTheme::MidnightHacker ? rgb(0xF0EEE8) : rgb(0x28262B);
         const ControlButton* described = nullptr;
         for (const auto& button : controlButtons) {
             bool enabled = controlEnabled(button.control, physics);
@@ -100,8 +102,9 @@ public:
         }
     }
 
-    static bool bowlAt(Pt point, const CatPhysics& physics) {
+    static bool bowlAt(Pt point, const CatPhysics& physics, CatCoatTheme coat = CatCoatTheme::ClassicBlack) {
         if (!physics.bowlVisible()) return false;
+        if (coat == CatCoatTheme::DopeyCat) return DopeyArt::dangoAt(point,physics);
         float show = bowlOpacity(physics.treatAge());
         if (show < 0.12f) return false;
         float x = point.x - CatPhysics::SeatAnchor.x, y = point.y - (219.0f - 3.0f * show);
@@ -109,16 +112,35 @@ public:
         return y <= 12.0f && std::abs(x) <= 22.0f - y * 0.36f;
     }
 
-    static CatHitZone hitTest(Pt p, const CatPhysics& physics) {
+    static CatHitZone hitTest(Pt p, const CatPhysics& physics, CatCoatTheme coat = CatCoatTheme::ClassicBlack,
+                              bool arcadeMode = false) {
         float cx = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value -
                    std::sin(physics.turnAway() * 3.14159265f) * 11.0f;
         Pt headCenter = headPosition(physics);
-
-        float dx = p.x - headCenter.x, dy = p.y - headCenter.y;
+        const float lift = coat == CatCoatTheme::DopeyCat ? physics.jumpLift : 0;
+        headCenter.y -= lift;
+        const bool sideSleep = coat == CatCoatTheme::DopeyCat && physics.resting() && !physics.feeding();
         float tilt = physics.headTilt.value;
-        float x = dx * std::cos(tilt) + dy * std::sin(tilt);
-        float y = dy * std::cos(tilt) - dx * std::sin(tilt);
-        if (y < 0 && y > -64 && std::abs(x) < 68 &&
+        Pt headScale{1,1};
+        if (sideSleep) {
+            const auto pose = DopeyArt::sleepHead(physics);
+            headCenter = pose.center;
+            tilt = pose.angle;
+            headScale = pose.scale;
+        }
+        else if (coat == CatCoatTheme::DopeyCat && physics.feeding()) headCenter = {CatPhysics::SeatAnchor.x,128};
+        float dx = p.x - headCenter.x, dy = p.y - headCenter.y;
+        float x = (dx * std::cos(tilt) + dy * std::sin(tilt)) / headScale.x;
+        float y = (dy * std::cos(tilt) - dx * std::sin(tilt)) / headScale.y;
+        if (coat == CatCoatTheme::DopeyCat) {
+            const float u = 33.0f - std::abs(x), v = y + 18;
+            if (v < -11 && v > -44 && u > -15 && u < (v+44)*0.86f-6) return CatHitZone::Head;
+            if (x*x/(52*52) + (y-6)*(y-6)/(44*44) <= 1) return CatHitZone::Head;
+            if (sideSleep && (std::hypot((p.x-159)/48,(p.y-196)/32) <= 1 ||
+                              std::hypot((p.x-151)/16,(p.y-161)/15) <= 1 ||
+                              std::hypot((p.x-241)/19,(p.y-222)/13) <= 1)) return CatHitZone::Body;
+        }
+        if (coat != CatCoatTheme::DopeyCat && y < 0 && y > -64 && std::abs(x) < 68 &&
             x*x/(43*43) + y*y/(30*30) > 1.0f) {
             bool left = x < 0;
             Gdiplus::GraphicsPath path;
@@ -126,21 +148,31 @@ public:
             if (path.IsVisible(x,y)) return left ? CatHitZone::LeftEar : CatHitZone::RightEar;
         }
         float bx = (p.x - cx) / 26.0f;
-        float by = (p.y - (CatPhysics::SeatAnchor.y - 22.0f)) / 19.0f;
+        float by = (p.y - (CatPhysics::SeatAnchor.y - lift - 22.0f)) / 19.0f;
         if (bx*bx + by*by <= 1.0f) return CatHitZone::Belly;
         float hdx = (p.x - headCenter.x) / 48.0f;
         float hdy = (p.y - headCenter.y) / 42.0f;
         if (hdx * hdx + hdy * hdy <= 1.0f) return CatHitZone::Head;
 
-        const Pt topLeft = KeyboardLayout::screenQuadPoint(-0.016f, -0.035f);
-        const Pt topRight = KeyboardLayout::screenQuadPoint(1.016f, -0.035f);
-        const Pt bottomLeft = KeyboardLayout::screenQuadPoint(-0.016f, 1.04f);
-        const Pt bottomRight = KeyboardLayout::screenQuadPoint(1.016f, 1.04f);
-        if (p.x >= bottomLeft.x - 1 && p.x <= bottomRight.x + 1) {
-            float u = std::clamp((p.x - topLeft.x) / (topRight.x - topLeft.x), 0.0f, 1.0f);
-            float top = topLeft.y + u * (topRight.y - topLeft.y);
-            float bottom = bottomLeft.y + u * (bottomRight.y - bottomLeft.y) + 5.5f;
-            if (p.y >= top - 1 && p.y <= bottom) return CatHitZone::Desk;
+        if (arcadeMode) {
+            const Pt pivot = CatPhysics::ArcadePivot, ball = physics.arcadeBall();
+            float baseX = (p.x-pivot.x)/18.0f, baseY = (p.y-pivot.y-1.5f)/14.0f;
+            if (baseX*baseX+baseY*baseY <= 1 || std::hypot(p.x-ball.x,p.y-ball.y) <= 11.0f ||
+                (p.x >= 161 && p.x <= 294 && p.y >= 236 && p.y <= 298))
+                return CatHitZone::Desk;
+            if (p.x >= std::min(pivot.x,ball.x)-4 && p.x <= std::max(pivot.x,ball.x)+4 &&
+                p.y >= ball.y && p.y <= pivot.y) return CatHitZone::Desk;
+        } else {
+            const Pt topLeft = KeyboardLayout::screenQuadPoint(-0.016f, -0.035f);
+            const Pt topRight = KeyboardLayout::screenQuadPoint(1.016f, -0.035f);
+            const Pt bottomLeft = KeyboardLayout::screenQuadPoint(-0.016f, 1.04f);
+            const Pt bottomRight = KeyboardLayout::screenQuadPoint(1.016f, 1.04f);
+            if (p.x >= bottomLeft.x - 1 && p.x <= bottomRight.x + 1) {
+                float u = std::clamp((p.x - topLeft.x) / (topRight.x - topLeft.x), 0.0f, 1.0f);
+                float top = topLeft.y + u * (topRight.y - topLeft.y);
+                float bottom = bottomLeft.y + u * (bottomRight.y - bottomLeft.y) + 5.5f;
+                if (p.y >= top - 1 && p.y <= bottom) return CatHitZone::Desk;
+            }
         }
 
         float puff = physics.furPuff();
@@ -148,7 +180,7 @@ public:
         float bdy = (p.y - 196.0f + 16.0f * puff) / (56.0f + 11.0f * puff);
         if (bdx * bdx + bdy * bdy <= 1.0f) return CatHitZone::Body;
 
-        if (p.x >= 58.0f && p.x <= 294.0f && p.y >= 232.0f && p.y <= 296.0f) return CatHitZone::Desk;
+        if (!arcadeMode && p.x >= 58.0f && p.x <= 294.0f && p.y >= 232.0f && p.y <= 296.0f) return CatHitZone::Desk;
         return CatHitZone::None;
     }
 
@@ -161,6 +193,12 @@ public:
         g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
         g.TranslateTransform(size * 0.5f, size * 0.55f);
         g.ScaleTransform(size / 100.0f, size / 100.0f);
+        if (settings.coatTheme == CatCoatTheme::DopeyCat) {
+            g.ScaleTransform(0.82f,0.82f);
+            DopeyArt::head(g);
+            g.Restore(state);
+            return;
+        }
         drawEarsLayer(g, head, pose, settings.coatTheme);
         GraphicsPath face;
         face.AddEllipse(-45.0f, -37.0f, 90.0f, 80.0f);
@@ -170,23 +208,28 @@ public:
         g.Restore(state);
     }
 
-    static void draw(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings) {
+    static void draw(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings, bool dragging = false) {
         using namespace Gdiplus;
         g.SetSmoothingMode(SmoothingModeAntiAlias);
         g.SetPixelOffsetMode(PixelOffsetModeHighQuality);
         g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
 
+        if (settings.coatTheme == CatCoatTheme::DopeyCat && dragging) {
+            DopeyArt::egg(g, CatPhysics::SeatAnchor.x, 155, physics.eggRoll);
+            return;
+        }
         float breath = physics.breathingOffset();
         float seatX = CatPhysics::SeatAnchor.x + physics.bodyShiftX.value;
         float seatY = CatPhysics::SeatAnchor.y;
 
         Pt headCenter = headPosition(physics);
 
-        if (settings.tabletMode) {
+        if (!settings.arcadeMode && settings.tabletMode) {
             drawTablet(g, physics);
-        } else {
-            drawMouse(g, physics, settings.keyboardTheme);
-            drawKeyboard(g, physics, settings.keyboardTheme, settings.eyeTheme, settings.showKeyLegends);
+        } else if (!settings.arcadeMode) {
+            const auto theme = settings.activeKeyboardTheme();
+            drawMouse(g, physics, theme);
+            drawKeyboard(g, physics, theme, settings.eyeTheme, settings.showKeyLegends);
         }
 
         const float turn = physics.turnAway();
@@ -194,30 +237,35 @@ public:
         const float step = std::abs(std::sin(turn * 6.2831853f)) * profile;
         const float backMix = CatPhysics::ease((turn - 0.43f) / 0.37f);
         seatX -= profile * 11.0f;
-        drawTail(g, seatX, seatY, physics, settings.coatTheme);
-        drawEarsLayer(g, headCenter, physics, settings.coatTheme);
-        drawUnifiedSilhouette(g, seatX, seatY, headCenter, breath, physics, settings.coatTheme, backMix);
-        if (turn == 0.0f) {
-            if (physics.hindFootActive.value > 0.03f) {
-                drawHindFoot(g, seatX, seatY, physics, settings.coatTheme);
+        if (settings.coatTheme == CatCoatTheme::DopeyCat && physics.feeding()) {
+            if (physics.bowlVisible()) DopeyArt::eating(g, physics);
+            else DopeyArt::barrelReaction(g, physics);
+        } else if (settings.coatTheme == CatCoatTheme::DopeyCat && physics.resting()) {
+            DopeyArt::sleeping(g, physics);
+            drawSparkles(g, physics, settings.eyeTheme, true);
+        } else if (settings.coatTheme == CatCoatTheme::DopeyCat) {
+            DopeyArt::body(g, physics, seatX, seatY - physics.jumpLift);
+            const auto state = g.Save();
+            g.TranslateTransform(headCenter.x,headCenter.y - physics.jumpLift);
+            g.RotateTransform(physics.headTilt.value * RadToDeg);
+            DopeyArt::head(g);
+            if (physics.headphones() > 0.015f) {
+                g.ScaleTransform(1.14f, 1.10f);
+                drawHeadphones(g, physics.headphones(), 0, settings.eyeTheme);
             }
-            drawHeadFeatures(g, headCenter, physics, settings.eyeTheme, settings.coatTheme);
-            bool holdingStylus = settings.tabletMode && physics.usingDesk();
-            if (holdingStylus) drawStylus(g, physics);
-            drawFrontPaws(g, seatX, seatY, breath, physics, settings.coatTheme, holdingStylus);
+            g.Restore(state);
+            if (settings.arcadeMode && physics.usingDesk()) drawArcade(g, physics, settings.activeKeyboardTheme());
+            const bool stylus = settings.tabletMode && physics.usingDesk() && !physics.doingDopeyGesture();
+            if (stylus) drawStylus(g, physics);
+            DopeyArt::hands(g, physics, stylus);
         } else {
-            if (turn < 0.60f) drawHeadFeatures(g, headCenter, physics, settings.eyeTheme, settings.coatTheme);
-            drawTurningPaws(g, seatX, seatY, step, turn, settings.coatTheme, physics);
+            drawStandardCat(g, physics, settings, seatX, seatY, headCenter, breath, turn, step, backMix);
         }
 
-        if (physics.bowlVisible()) drawTreatBowl(g, physics.treatAge());
-
-        // 9. Floating Keycap Badges (keyboard + mouse clicks)
-        if (!physics.floatingKeycaps.empty()) {
-            drawFloatingKeycaps(g, physics, settings);
-        }
-
-        // 10. Subtle Petting Sparkles & Sleep Z
+        if (settings.arcadeMode && !physics.usingDesk()) drawArcade(g, physics, settings.activeKeyboardTheme());
+        if (physics.bowlVisible() && settings.coatTheme != CatCoatTheme::DopeyCat) drawTreatBowl(g, physics.treatAge());
+        if (!physics.floatingKeycaps.empty()) drawFloatingKeycaps(g, physics, settings);
+        if (settings.coatTheme == CatCoatTheme::DopeyCat) return;
         drawSparkles(g, physics, settings.eyeTheme);
         if (physics.facingAway()) {
             float phase = physics.backAngerPhase();
@@ -229,6 +277,27 @@ public:
     }
 
 private:
+    static void drawStandardCat(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings,
+                                float seatX, float seatY, Pt headCenter, float breath, float turn, float step, float backMix) {
+        drawTail(g, seatX, seatY, physics, settings.coatTheme);
+        drawEarsLayer(g, headCenter, physics, settings.coatTheme);
+        drawUnifiedSilhouette(g, seatX, seatY, headCenter, breath, physics, settings.coatTheme, backMix);
+        if (turn == 0.0f) {
+            if (physics.hindFootActive.value > 0.03f) {
+                drawHindFoot(g, seatX, seatY, physics, settings.coatTheme);
+            }
+            drawHeadFeatures(g, headCenter, physics, settings.eyeTheme, settings.coatTheme);
+            if (settings.arcadeMode && physics.usingDesk()) drawArcade(g, physics, settings.activeKeyboardTheme());
+            bool holdingStylus = settings.tabletMode && physics.usingDesk();
+            if (holdingStylus) drawStylus(g, physics);
+            drawFrontPaws(g, seatX, seatY, breath, physics, settings.coatTheme, holdingStylus);
+        } else {
+            if (turn < 0.60f) drawHeadFeatures(g, headCenter, physics, settings.eyeTheme, settings.coatTheme);
+            drawTurningPaws(g, seatX, seatY, step, turn, settings.coatTheme, physics);
+        }
+
+    }
+
     static Pt headPosition(const CatPhysics& physics) {
         float turn = physics.turnAway();
         float profile = std::sin(turn * 3.14159265f);
@@ -267,6 +336,7 @@ private:
         switch (mode) {
             case DeskMode::Keyboard: return L"键鼠 · 点击切换";
             case DeskMode::Tablet: return L"数位板 · 点击切换";
+            case DeskMode::Arcade: return L"街机摇杆 · 点击切换";
             default: return L"自动检测 · 点击切换";
         }
     }
@@ -339,6 +409,12 @@ private:
                     rounded(-7.7f, -4.8f, 15.4f, 10.5f, 2.0f);
                     g.DrawLine(&pen, -0.4f, 2.7f, 5.9f, -6.5f);
                     g.FillEllipse(&ink, -5.5f, -2.9f, 1.8f, 1.8f);
+                } else if (mode == DeskMode::Arcade) {
+                    rounded(-7.5f, 1.0f, 15.0f, 5.4f, 2.0f);
+                    g.DrawLine(&pen, -3.0f, 1.0f, -4.5f, -4.2f);
+                    g.FillEllipse(&ink, -7.0f, -7.0f, 5.2f, 5.2f);
+                    g.FillEllipse(&ink, 1.0f, -0.4f, 2.8f, 2.4f);
+                    g.FillEllipse(&ink, 4.5f, -1.2f, 2.8f, 2.4f);
                 } else {
                     g.DrawArc(&pen, -6.8f, -6.8f, 13.6f, 13.6f, 192.0f, 153.0f);
                     g.DrawArc(&pen, -6.8f, -6.8f, 13.6f, 13.6f, 12.0f, 153.0f);
@@ -390,6 +466,9 @@ private:
     };
 
     static KeyboardColors keyboardColors(KeyboardTheme theme) {
+        if (theme == KeyboardTheme::DopeyBlue) {
+            return {rgb(0x343C69), rgb(0x596694), rgb(0xFFF0CC), rgb(0x8792B8), rgb(0x9AADE9)};
+        }
         if (theme == KeyboardTheme::MidnightHacker) {
             return {rgb(0x0F0F14), rgb(0x1A1C21), rgb(0x363840), rgb(0x1C1C21, 242), rgb(0xC4F040)};
         }
@@ -514,7 +593,10 @@ private:
         g.FillEllipse(&shadowBrush, -13.5f, -9.5f, 27.0f, 31.0f);
 
         Color bodyCol, borderCol, wheelCol;
-        if (theme == KeyboardTheme::MidnightHacker) {
+        if (theme == KeyboardTheme::DopeyBlue) {
+            auto colors = keyboardColors(theme);
+            bodyCol = colors.cap; borderCol = colors.base; wheelCol = colors.accent;
+        } else if (theme == KeyboardTheme::MidnightHacker) {
             bodyCol = Color(255, 51, 54, 61); borderCol = Color(255, 20, 20, 26); wheelCol = Color(255, 199, 242, 64);
         } else if (theme == KeyboardTheme::RetroCream) {
             bodyCol = Color(255, 227, 222, 209); borderCol = Color(255, 51, 48, 46); wheelCol = Color(255, 224, 107, 61);
@@ -616,7 +698,7 @@ private:
 
         constexpr float padU = 0.0028f;
         constexpr float padV = 0.014f;
-        Color glowCol = eyePrimary(eyeTheme, 215);
+        Color glowCol = theme == KeyboardTheme::DopeyBlue ? rgb(0x9A82E4, 215) : eyePrimary(eyeTheme, 215);
         Pen keyBorderPen(borderCol, 0.65f);
         FontFamily kbFF(L"Segoe UI");
         StringFormat kbSF;
@@ -643,6 +725,8 @@ private:
             GraphicsPath kp;
             addQuadPoly(kp, kTL, kTR, kBR, kBL);
             Color fill = cap.isAmberAccent ? accentCol : keyCol;
+            if (theme == KeyboardTheme::DopeyBlue && !cap.isAmberAccent && cap.widthUnits > 1.0f / 15.0f)
+                fill = rgb(0xD2D9F4);
             if (glow > 0.02f) fill = blendColor(fill, glowCol, glow * 0.55f);
 
             SolidBrush kb(fill);
@@ -1322,6 +1406,52 @@ private:
 
     // MARK: - Front Paws
 
+    static void drawArcade(Gdiplus::Graphics& g, const CatPhysics& physics, KeyboardTheme theme) {
+        using namespace Gdiplus;
+        const auto colors = keyboardColors(theme);
+        const Color plate = blendColor(colors.deck, colors.cap, 0.16f);
+        const Color accent = theme == KeyboardTheme::ClassicMilk ? rgb(0xDC527B) : colors.accent;
+        auto panel = [&](float x, float y, float w, float h) {
+            GraphicsPath lower, upper;
+            addRoundedRect(lower, x, y+5, w, h, 7);
+            addRoundedRect(upper, x, y, w, h, 7);
+            SolidBrush base(colors.base), top(plate);
+            g.FillPath(&base, &lower);
+            g.FillPath(&top, &upper);
+            Pen rim(blendColor(colors.border, colors.cap, 0.36f), 1.0f);
+            g.DrawPath(&rim, &upper);
+        };
+        panel(161, 236, 133, 57);
+        const Pt pivot = CatPhysics::ArcadePivot, ball = physics.arcadeBall();
+        SolidBrush socket(colors.base), knob(accent);
+        g.FillEllipse(&socket, pivot.x-18, pivot.y-9, 36.0f, 24.0f);
+        SolidBrush socketTop(plate);
+        g.FillEllipse(&socketTop, pivot.x-18, pivot.y-12, 36.0f, 24.0f);
+        Pen ring(blendColor(colors.border,colors.cap,0.35f),1.1f);
+        g.DrawEllipse(&ring, pivot.x-18,pivot.y-12,36.0f,24.0f);
+        Pen stem(rgb(0xB8BCC6), 6);
+        stem.SetEndCap(LineCapRound);
+        g.DrawLine(&stem,pivot.x,pivot.y,ball.x,ball.y);
+        SolidBrush edge(blendColor(accent, colors.base, 0.49f));
+        g.FillEllipse(&edge,ball.x-10.4f,ball.y-9.0f,20.8f,20.8f);
+        g.FillEllipse(&knob,ball.x-10,ball.y-10.3f,20.0f,19.8f);
+        SolidBrush reflection(rgb(0xFFFFFF,115));
+        g.FillEllipse(&reflection,ball.x-6,ball.y-6,7.0f,3.5f);
+        for (int i=0; i<8; ++i) {
+            const Pt p = CatPhysics::arcadeButtonCenter(i);
+            const float press = physics.arcadeButtonPressure[i];
+            const float shift = press*2.5f;
+            const Color face = i % 4 < 2 ? accent : blendColor(accent,colors.cap,0.62f);
+            SolidBrush rim(colors.base), lip(blendColor(face,colors.base,0.38f));
+            SolidBrush cap(blendColor(face,rgb(0xFFFFFF),press*0.32f));
+            g.FillEllipse(&rim,p.x-11.8f,p.y-9.1f,23.6f,18.2f);
+            g.FillEllipse(&lip,p.x-10.6f,p.y-8.8f,21.2f,16.9f);
+            g.FillEllipse(&cap,p.x-9.5f,p.y-8.9f+shift,19.0f,13.3f);
+            Pen highlight(rgb(0xFFFFFF,115),0.8f);
+            g.DrawArc(&highlight,p.x-8.2f,p.y-7.3f+shift,16.4f,10.7f,196,142);
+        }
+    }
+
     static void drawTablet(Gdiplus::Graphics& g, const CatPhysics& physics) {
         using namespace Gdiplus;
         auto panel = [&](float x, float y, float w, float h, float r, Color color) {
@@ -1721,7 +1851,7 @@ private:
 
     // MARK: - Petting Sparkles & Sleep Z
 
-    static void drawSparkles(Gdiplus::Graphics& g, const CatPhysics& physics, EyeColorTheme eyeTheme) {
+    static void drawSparkles(Gdiplus::Graphics& g, const CatPhysics& physics, EyeColorTheme eyeTheme, bool dopeySleep = false) {
         using namespace Gdiplus;
         Color baseCol = eyePrimary(eyeTheme);
         FontFamily ff(L"Segoe UI");
@@ -1733,9 +1863,21 @@ private:
 
             Color c(a, baseCol.GetR(), baseCol.GetG(), baseCol.GetB());
             if (sp.isSleepZ) {
-                Font f(&ff, 11.0f + p * 3.0f, FontStyleBold, UnitPixel);
-                SolidBrush sb(c);
-                g.DrawString(L"z", -1, &f, PointF(sp.position.x, sp.position.y), &sb);
+                if (dopeySleep) {
+                    constexpr float delay = .28f;
+                    for (int i = 0; i < 3; ++i) {
+                        const float phase = (sp.age-i*delay)/(sp.lifetime-2*delay);
+                        if (phase <= 0 || phase >= 1) continue;
+                        const float opacity = CatPhysics::ease(phase/.16f) * CatPhysics::ease((1-phase)/.43f);
+                        Font font(&ff,10.f+4*i,FontStyleBold,UnitPixel);
+                        SolidBrush ink(Color(BYTE(225*opacity),135,146,203));
+                        g.DrawString(L"z",1,&font,PointF(sp.position.x+11+12*i,sp.position.y-19-9*i),&ink);
+                    }
+                } else {
+                    Font font(&ff,11.f+p*3.f,FontStyleBold,UnitPixel);
+                    SolidBrush ink(c);
+                    g.DrawString(L"z",1,&font,PointF(sp.position.x,sp.position.y),&ink);
+                }
             } else {
                 float r = 3.5f + p * 1.5f;
                 GraphicsState st = g.Save();

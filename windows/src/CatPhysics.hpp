@@ -15,13 +15,15 @@ enum class CatCoatTheme : int {
     Siamese = 1,
     Shorthair = 2,
     OrangeWhite = 3,
-    OrcaCat = 4
+    OrcaCat = 4,
+    DopeyCat = 5
 };
 
 enum class KeyboardTheme : int {
     ClassicMilk = 0,
     MidnightHacker = 1,
-    RetroCream = 2
+    RetroCream = 2,
+    DopeyBlue = 3
 };
 
 enum class EyeColorTheme : int {
@@ -33,11 +35,12 @@ enum class EyeColorTheme : int {
     ReferenceHazel = 5
 };
 
-enum class DeskMode { Keyboard, Tablet, Auto };
+enum class DeskMode { Keyboard, Tablet, Auto, Arcade };
 
 struct CatSettings {
     bool tabletMode = false;
     bool autoDeskMode = true;
+    bool arcadeMode = false;
     bool showKeyBadges = true;
     bool showMouseBadges = false;
     bool showControls = false;
@@ -52,12 +55,19 @@ struct CatSettings {
     float scale = 1.0f;
     CatCoatTheme coatTheme = CatCoatTheme::OrcaCat;
     KeyboardTheme keyboardTheme = KeyboardTheme::ClassicMilk;
+    KeyboardTheme dopeyKeyboardTheme = KeyboardTheme::DopeyBlue;
+    KeyboardTheme activeKeyboardTheme() const {
+        return coatTheme == CatCoatTheme::DopeyCat ? dopeyKeyboardTheme : keyboardTheme;
+    }
+    void setActiveKeyboardTheme(KeyboardTheme theme) {
+        (coatTheme == CatCoatTheme::DopeyCat ? dopeyKeyboardTheme : keyboardTheme) = theme;
+    }
     EyeColorTheme eyeTheme = EyeColorTheme::ReferenceHazel;
     int posX = -99999;
     int posY = -99999;
 
     DeskMode deskMode() const {
-        return autoDeskMode ? DeskMode::Auto : (tabletMode ? DeskMode::Tablet : DeskMode::Keyboard);
+        return arcadeMode ? DeskMode::Arcade : (autoDeskMode ? DeskMode::Auto : (tabletMode ? DeskMode::Tablet : DeskMode::Keyboard));
     }
 
     void loadFromRegistry() {
@@ -70,6 +80,8 @@ struct CatSettings {
         };
         autoDeskMode     = readDword(L"AutoDeskMode", autoDeskMode) != 0;
         tabletMode       = readDword(L"TabletMode", tabletMode) != 0;
+        arcadeMode       = readDword(L"ArcadeMode", arcadeMode) != 0;
+        if (arcadeMode) autoDeskMode = tabletMode = false;
         showKeyBadges    = readDword(L"ShowKeyBadges", showKeyBadges) != 0;
         showMouseBadges  = readDword(L"ShowMouseBadges", showMouseBadges) != 0;
         showControls     = readDword(L"ControlsVisible", showControls) != 0;
@@ -82,8 +94,12 @@ struct CatSettings {
         alwaysOnTop      = readDword(L"AlwaysOnTop", alwaysOnTop) != 0;
         runAsAdmin       = readDword(L"RunAsAdmin", runAsAdmin) != 0;
         scale            = std::clamp((float)readDword(L"ScalePct", (DWORD)(scale * 100.0f)) / 100.0f, 0.5f, 2.0f);
-        coatTheme        = (CatCoatTheme)std::clamp((int)readDword(L"CoatTheme", (DWORD)coatTheme), 0, (int)CatCoatTheme::OrcaCat);
-        keyboardTheme    = (KeyboardTheme)std::clamp((int)readDword(L"KeyboardTheme", (DWORD)keyboardTheme), 0, 2);
+        coatTheme        = (CatCoatTheme)std::clamp((int)readDword(L"CoatTheme", (DWORD)coatTheme), 0, (int)CatCoatTheme::DopeyCat);
+        const auto readTheme = [&](const wchar_t* key, KeyboardTheme fallback) {
+            return (KeyboardTheme)std::clamp((int)readDword(key, (DWORD)fallback), 0, (int)KeyboardTheme::DopeyBlue);
+        };
+        keyboardTheme = readTheme(L"KeyboardTheme", keyboardTheme);
+        dopeyKeyboardTheme = readTheme(L"DopeyKeyboardTheme", dopeyKeyboardTheme);
         eyeTheme         = (EyeColorTheme)std::clamp((int)readDword(L"EyeTheme", (DWORD)eyeTheme), 0, 5);
         DWORD hasPos     = readDword(L"HasPos", 0);
         if (hasPos) {
@@ -100,6 +116,7 @@ struct CatSettings {
             RegSetValueExW(hKey, name, 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
         };
         writeDword(L"AutoDeskMode", autoDeskMode);
+        writeDword(L"ArcadeMode", arcadeMode);
         if (!autoDeskMode) writeDword(L"TabletMode", tabletMode);
         writeDword(L"ShowKeyBadges", showKeyBadges ? 1 : 0);
         writeDword(L"ShowMouseBadges", showMouseBadges ? 1 : 0);
@@ -115,6 +132,7 @@ struct CatSettings {
         writeDword(L"ScalePct", (DWORD)(scale * 100.0f + 0.5f));
         writeDword(L"CoatTheme", (DWORD)coatTheme);
         writeDword(L"KeyboardTheme", (DWORD)keyboardTheme);
+        writeDword(L"DopeyKeyboardTheme", (DWORD)dopeyKeyboardTheme);
         writeDword(L"EyeTheme", (DWORD)eyeTheme);
         if (posX != -99999 && posY != -99999) {
             writeDword(L"HasPos", 1);
@@ -193,6 +211,24 @@ public:
     Spring1D bodyTilt{0.0f};
     Spring1D bodySquash{1.0f};
     Spring1D headTilt{0.0f};
+    Spring1D punchReach{0.0f}; // Negative brings the viewer's left fist forward.
+    float jumpLift = 0;
+    static constexpr float EggRadius = 59.0f;
+    float eggRoll = 0; // Radians in the top-down canvas.
+    float remainingRoll = 0;
+    void rollEgg(float dx, float dy) {
+        // Roll by arc length. Diagonal motion follows the dominant screen axis.
+        const float direction = std::abs(dx) >= std::abs(dy) ? dx : dy;
+        const float arc = std::copysign(std::hypot(dx, dy), direction) / EggRadius;
+        if (arc * remainingRoll < 0) remainingRoll = 0;
+        remainingRoll = std::clamp(remainingRoll + arc * 0.55f, -0.85f, 0.85f);
+        eggRoll = std::remainder(eggRoll + arc * 0.45f, 6.2831853f);
+    }
+    void coastEgg(float dt) {
+        const float next = remainingRoll * std::exp(-dt * 7.5f);
+        eggRoll = std::remainder(eggRoll + remainingRoll - next, 6.2831853f);
+        remainingRoll = next;
+    }
     Spring1D headYaw{0.0f};
     Spring1D headPitch{0.0f};
     Spring1D headOffsetY{0.0f};
@@ -204,6 +240,16 @@ public:
     Spring2D mouseOffset{{0.0f, 0.0f}};
     Spring1D mousePressLeft{0.0f};
     Spring1D mousePressRight{0.0f};
+    static constexpr Pt ArcadePivot{110.0f, 266.0f};
+    static constexpr Pt arcadeButtonCenter(int index) {
+        const int column = index % 4;
+        return {181.0f + 30.5f * column, (index < 4 ? 250.0f : 276.0f) + (column == 0 ? 4.0f : (column == 3 ? 3.0f : 0.0f))};
+    }
+    Spring2D arcadeStick{};
+    int arcadeButton = -1;
+    float arcadePressure = 0;
+    float arcadeButtonPressure[8]{};
+    Pt arcadeBall() const { return {ArcadePivot.x + arcadeStick.x.value, ArcadePivot.y - 23 + arcadeStick.y.value}; }
 
     bool leftPawOnMouse = false;
     bool leftPawTyping = false;
@@ -254,6 +300,15 @@ public:
     bool usingDesk() const { return !resting() && !feeding() && !listening() && !ignoring() && turnAway_ == 0.0f; }
     float breathingOffset() const { return std::sin(breathPhase_) * 1.6f; }
     float treatAge() const { return treatAge_; }
+    bool guardingDango() const { return bowlVisible() && time < bowlScoldUntil_; }
+    float dangoLowering() const {
+        const float remaining = bowlScoldUntil_ - time;
+        return ease((1.2f - remaining) / .16f) * ease(remaining / .18f);
+    }
+    void disturbDango(bool take) {
+        bowlScoldUntil_ = take ? time : time + 1.2f;
+        if (take) treatAge_ = BowlEnd;
+    }
     float washLift() const {
         if (!feeding()) return 0.0f;
         return ease((treatAge_ - 2.85f) / 0.42f) * ease((5.1f - treatAge_) / 0.44f);
@@ -287,6 +342,28 @@ public:
         backPuffUntil_ = now + 2.0;
         bodySquash.velocity = -2.8f;
         headOffsetY.velocity = 310.0f;
+    }
+
+    void enterDopeySkin() {
+        wakeUp();
+        treatAge_ = -1;
+        ignoreUntil_ = backPuffUntil_ = 0;
+        turnProgress_ = turnAway_ = furPuff_ = furPuffTarget_ = 0;
+        dopeyIdleTime_ = 0;
+        clickedGesture_ = -1;
+        clickedGestureUntil_ = 0;
+        punchReach = Spring1D{};
+        reachAge_ = missedReach_ = boxUntil_ = jumpLift = 0;
+        clearDeskPose();
+    }
+
+    bool doingDopeyGesture() const { return time < clickedGestureUntil_ || time < boxUntil_ || reachAge_ > 0 || dopeyIdleTime_ >= 4; }
+
+    void clickDopeyCat() {
+        boxUntil_ = 0;
+        clickedGesture_ = (clickedGesture_ + 1) % DopeyGestureCount;
+        clickedGestureUntil_ = time + DopeyGestureDuration;
+        dopeyIdleTime_ = 0;
     }
 
     void wakeUp() {
@@ -423,6 +500,23 @@ public:
 
     void triggerKeyDown(PhysicalKey key, const CatSettings& settings) {
         if (!usingDesk()) return;
+        if (settings.arcadeMode) {
+            clickedGestureUntil_ = 0;
+            static constexpr int buttonOrder[] = {0, 4, 1, 5, 2, 6, 3, 7};
+            int button = 0;
+            for (int i=0; i<8; ++i) {
+                button = buttonOrder[arcadeNextButton_];
+                arcadeNextButton_ = (arcadeNextButton_ + 1) % std::size(buttonOrder);
+                auto occupied = std::any_of(arcadeKeyButtons_.begin(), arcadeKeyButtons_.end(),
+                    [button,key](const auto& entry) { return entry.first != key && entry.second == button; });
+                if (!occupied) break;
+            }
+            arcadeButton = arcadeLastButton_ = button;
+            arcadeKeyButtons_[key] = button;
+            arcadeTapUntil_[button] = time + 0.15f;
+            return;
+        }
+        clickedGestureUntil_ = 0;
         double now = nowSeconds();
         if (settings.tabletMode) {
             pressTabletKey(key, now);
@@ -440,7 +534,7 @@ public:
         lastTypedPoint_ = pt;
 
         bool footTap = false, tailTap = false;
-        if (settings.footEasterEgg) {
+        if (settings.footEasterEgg && settings.coatTheme != CatCoatTheme::DopeyCat) {
             const size_t previousSpeed = typingTaps_.size();
             while (!typingTaps_.empty() && now - typingTaps_.front() >= 1.0) typingTaps_.pop_front();
             if (typingTaps_.empty()) typingBeat_ = 0;
@@ -481,6 +575,7 @@ public:
 
     void triggerMouseClick(int button, bool isDown, const CatSettings& settings) {
         if (!usingDesk()) return;
+        if (settings.arcadeMode) return;
         if (settings.tabletMode) {
             POINT cursor;
             if (button == 0 && GetCursorPos(&cursor)) sampleTablet(cursor, isDown);
@@ -578,8 +673,11 @@ public:
         const float puffTarget = now < backPuffUntil_ ? furPuffTarget_ : 0.0f;
         furPuff_ += std::clamp(puffTarget - furPuff_, -dt, dt * 4.5f);
         if (feeding() && time >= bowlScoldUntil_) {
-            treatAge_ += bowlVisible() ? dt * BowlEnd / mealSeconds_ : dt;
-            if (treatAge_ >= 5.24f) {
+            const bool dopeyMeal = settings.coatTheme == CatCoatTheme::DopeyCat;
+            const bool eating = bowlVisible();
+            const float end = dopeyMeal ? (eating ? BowlEnd : BowlEnd + 2.85f) : 5.24f;
+            treatAge_ += eating ? dt * BowlEnd / mealSeconds_ * (dopeyMeal ? 2.2f : 1.0f) : dt;
+            if (treatAge_ >= end) {
                 treatAge_ = -1.0f;
                 lastPetTime_ = nowSeconds();
             }
@@ -610,7 +708,9 @@ public:
         }
 
         const bool deskActive = usingDesk();
-        const bool typing = deskActive && engine.lastKeyActivityTime > 0.0 &&
+        const bool dopey = settings.coatTheme == CatCoatTheme::DopeyCat;
+        const bool arcade = settings.arcadeMode && deskActive;
+        const bool typing = !dopey && deskActive && !arcade && engine.lastKeyActivityTime > 0.0 &&
                             now - engine.lastKeyActivityTime <= 2.0;
         if (typing) {
             if (typingSince_ < 0.0) typingSince_ = engine.lastKeyActivityTime;
@@ -618,7 +718,7 @@ public:
             typingSince_ = -1.0;
         }
         const bool impatient = typing && now - typingSince_ > 60.0;
-        tailImpatience_ += ((impatient ? 1.0f : 0.0f) - tailImpatience_) * std::min(1.0f, dt * 6.0f);
+        tailImpatience_ = dopey ? 0.0f : tailImpatience_ + ((impatient ? 1.0f : 0.0f) - tailImpatience_) * std::min(1.0f, dt * 6.0f);
         tailSlapTime_ = impatient || tailImpatience_ > 0.01f ? tailSlapTime_ + dt : 0.0f;
         const bool musicActive = listening() && !feeding() && !sulking;
         float targetSleep = resting() && !feeding() && !sulking ? 1.0f : 0.0f;
@@ -649,7 +749,7 @@ public:
 
         // 2b. Fast Mouse Movement -> Hunting Mode (big round boba pupils + low crouch!)
         float mouseSpeed = std::hypot(engine.mouseVelocity.x, engine.mouseVelocity.y);
-        if (deskActive && mouseSpeed > 460.0f && petHeadIntensity < 0.25f && petBodyIntensity < 0.25f) {
+        if (deskActive && !arcade && mouseSpeed > 460.0f && petHeadIntensity < 0.25f && petBodyIntensity < 0.25f) {
             float boost = std::min(1.0f, (mouseSpeed - 460.0f) / 1100.0f);
             huntIntensity.target = std::min(1.0f, huntIntensity.target + (0.45f + boost * 1.15f) * dt);
             sleepiness = 0.0f;
@@ -663,7 +763,7 @@ public:
         constexpr double tapHoldWindow = 0.14;
         bool mouseRecent = (now - engine.lastMouseMoveTime < 2.2) || engine.leftMouseDown || engine.rightMouseDown;
         bool mouseActivelyUsed = (now - engine.lastMouseMoveTime < 0.75) || engine.leftMouseDown || engine.rightMouseDown;
-        bool extraTyping = deskActive && !settings.tabletMode && settings.footEasterEgg;
+        bool extraTyping = !dopey && deskActive && !settings.tabletMode && !arcade && settings.footEasterEgg;
         PhysicalKey footKey = extraTyping && now - recentFootTime_ < 0.20 ? recentFootKey_ : PhysicalKey::None;
         double tailAge = now - recentTailTime_;
         bool tailTyping = extraTyping && !impatient && tailImpatience_ <= 0.001f &&
@@ -732,7 +832,7 @@ public:
             leftPawTyping = false;
             leftPawOnMouse = true;
         } else {
-            leftPaw.setTarget(LeftPawRest);
+            leftPaw.setTarget(dopey ? Pt{SeatAnchor.x + bodyShiftX.value - 15.0f, 184.0f + breathingOffset()} : LeftPawRest);
             leftPawTyping = false;
             leftPawOnMouse = false;
         }
@@ -741,7 +841,7 @@ public:
             rightPaw.setTarget(KeyboardLayout::canvasPointForKey(rightKey));
             rightPawTyping = true;
         } else {
-            rightPaw.setTarget(RightPawRest);
+            rightPaw.setTarget(dopey ? Pt{SeatAnchor.x + bodyShiftX.value + 15.0f, 184.0f + breathingOffset()} : RightPawRest);
             rightPawTyping = false;
         }
 
@@ -777,11 +877,53 @@ public:
         if (!deskActive) {
             leftPawOnMouse = leftPawTyping = rightPawTyping = false;
             hindFootActive.target = 0.0f;
-            leftPaw.setTarget({SeatAnchor.x - 17.0f - 7.0f * lean, 231.0f - 7.0f * sleepiness});
-            rightPaw.setTarget({SeatAnchor.x + 17.0f + 7.0f * lean + lift * (-7.0f + 17.0f * wipe),
-                                231.0f - 7.0f * sleepiness - lift * (75.0f + 16.0f * wipe)});
+            if (dopey && musicActive) {
+                leftPaw.setTarget({SeatAnchor.x - 15.0f, 184.0f});
+                rightPaw.setTarget({SeatAnchor.x + 15.0f, 184.0f});
+            } else {
+                leftPaw.setTarget({SeatAnchor.x - 17.0f - 7.0f * lean, 231.0f - 7.0f * sleepiness});
+                rightPaw.setTarget({SeatAnchor.x + 17.0f + 7.0f * lean + lift * (-7.0f + 17.0f * wipe),
+                                    231.0f - 7.0f * sleepiness - lift * (75.0f + 16.0f * wipe)});
+            }
         }
+        if (!dopey || !deskActive) clickedGestureUntil_ = 0;
+        const bool clickedGesture = time < clickedGestureUntil_;
+        const float winScale = std::max(0.2f, (windowRect.right - windowRect.left) / CanvasWidth);
+        const Pt cursor{(engine.lastCursorPos.x-windowRect.left)/winScale, (engine.lastCursorPos.y-windowRect.top)/winScale};
+        const double lastKey = std::max(engine.lastKeyActivityTime, engine.lastKeyReleaseTime);
+        const bool canReach = dopey && deskActive && settings.petInteraction && activeKeys.empty() &&
+            (lastKey == 0 || now - lastKey >= 0.65) && !engine.leftMouseDown && !engine.rightMouseDown && !overControl;
+        if (!canReach) boxUntil_ = 0;
+        // Anchor the hover band to the standing pose so the jump cannot move it out from under the cursor.
+        const bool reaching = canReach && !clickedGesture && time >= boxUntil_ &&
+            std::abs(cursor.x - SeatAnchor.x) <= 110 && cursor.y >= -68 && cursor.y <= 92;
+        if (reaching) {
+            reachAge_ += dt;
+            const auto touches = [cursor](Pt paw) { return std::hypot(paw.x-cursor.x, paw.y-cursor.y) <= 15.2f; };
+            missedReach_ = touches(leftPaw.point()) || touches(rightPaw.point()) ? 0 : missedReach_ + rawDt;
+            if (missedReach_ >= 5) {
+                boxUntil_ = time + DopeyGestureDuration;
+                reachAge_ = missedReach_ = 0;
+            }
+        } else {
+            reachAge_ = missedReach_ = 0;
+        }
+        dopeyIdleTime_ = dopey && deskActive && !arcade && !clickedGesture && reachAge_ == 0 && time >= boxUntil_ &&
+            !engine.activelyUsed(now) && !overControl ? dopeyIdleTime_ + dt : 0;
+        GestureHead gestureHead{};
+        punchReach.target = 0;
+        if (reachAge_ == 0) jumpLift *= std::max(0.0f, 1 - dt * 16);
+        if (doingDopeyGesture()) {
+            leftPawOnMouse = leftPawTyping = rightPawTyping = false;
+            const float elapsed = dopeyIdleTime_ - 4;
+            if (reachAge_ > 0) gestureHead = poseReach(cursor);
+            else if (time < boxUntil_) gestureHead = poseDopeyHands(4, DopeyGestureDuration - (boxUntil_ - time));
+            else if (clickedGesture) gestureHead = poseDopeyHands(clickedGesture_, DopeyGestureDuration - (clickedGestureUntil_ - time));
+            else gestureHead = poseDopeyHands(static_cast<int>(elapsed / 6) % DopeyGestureCount, std::fmod(elapsed, 6.0f));
+        }
+        updateArcade(dt, arcade && !doingDopeyGesture(), overControl, engine);
         leftPaw.step(dt, 360.0f, 24.0f);
+        if (dopey) punchReach.step(dt, 360.0f, 24.0f);
         rightPaw.step(dt, 360.0f, 24.0f);
         hindFoot.step(dt, 320.0f, 22.0f);
         hindFootActive.step(dt, 260.0f, 22.0f);
@@ -799,12 +941,17 @@ public:
             targetShiftX = (avgX - 184.0f) * 0.14f;
             targetBodyTilt = (avgX - 184.0f) * 0.0011f;
         }
+        if (arcade && !doingDopeyGesture()) {
+            targetShiftX = arcadeStick.x.value * 0.30f;
+            targetBodyTilt = arcadeStick.x.value * 0.006f;
+        }
         bodyShiftX.target = std::clamp(targetShiftX, -16.0f, 16.0f);
+        targetBodyTilt += gestureHead.tilt * 0.55f;
         bodyTilt.target = std::clamp(targetBodyTilt, -0.12f, 0.12f) + 0.045f * sleepiness
-            + 0.075f * sway + 0.041f * drift;
+            + (dopey ? 0.0f : 0.075f * sway + 0.041f * drift);
         bodySquash.target = 1.0f - hunt * 0.11f - 0.20f * sleepiness - 0.12f * lean;
         headOffsetY.target = (leftPawTyping || rightPawTyping) ? 3.5f
-            : (sleepiness * 28.0f + hunt * 10.5f + lean * 45.0f + bites * 5.5f + lift * 4.0f + 9.0f * musicPulse);
+            : (sleepiness * 28.0f + hunt * 10.5f + lean * 45.0f + bites * 5.5f + lift * 4.0f + 9.0f * musicPulse + gestureHead.drop);
         earTwitch.target = 0.0f;
 
         bodyShiftX.step(dt, 140.0f, 18.0f);
@@ -832,8 +979,6 @@ public:
         bool mouseMovedRecently = (now - engine.lastMouseMoveTime < 1.2);
         Pt eyeOrigin = { SeatAnchor.x + bodyShiftX.value, 124.0f + headOffsetY.value };
 
-        float winW = std::max(1.0f, (float)(windowRect.right - windowRect.left));
-        float winScale = std::max(0.2f, winW / CanvasWidth);
         float headScreenX = (float)windowRect.left + eyeOrigin.x * winScale;
         float headScreenY = (float)windowRect.top  + eyeOrigin.y * winScale;
 
@@ -845,7 +990,10 @@ public:
         float cursorNY = curMag > 0.001f ? (curDy / curMag) * clampedCur : 0.0f;
 
         float lookX = cursorNX, lookY = cursorNY;
-        if (typingRecently && !mouseMovedRecently && hasLastTypedPoint_) {
+        if (arcade && !doingDopeyGesture()) {
+            lookX = arcadeStick.x.value * 0.026f;
+            lookY = -0.12f + 0.055f * arcadePressure;
+        } else if (typingRecently && !mouseMovedRecently && hasLastTypedPoint_) {
             lookX = std::clamp((lastTypedPoint_.x - eyeOrigin.x) / 95.0f, -0.85f, 0.85f);
             lookY = std::clamp((lastTypedPoint_.y - eyeOrigin.y) / 125.0f, -0.3f, 0.92f);
         } else if (typingRecently && mouseMovedRecently && hasLastTypedPoint_) {
@@ -875,8 +1023,10 @@ public:
         if (now - lastPetTime_ > 0.28) {
             headTilt.target = bodyTilt.target * 0.45f + headYaw.value * (0.11f + hunt * 0.05f) - headYaw.value * headPitch.value * 0.04f;
         }
+        if (doingDopeyGesture()) headTilt.target = gestureHead.tilt;
         if (!deskActive) headTilt.target = 0.115f * sleepiness + 0.21f * lift;
         if (musicActive) headTilt.target = 0.24f * sway + 0.11f * drift;
+        if (arcade && !doingDopeyGesture()) headTilt.target = arcadeStick.x.value * 0.008f + 0.022f * arcadePressure;
         float shakeAge = time - lastShake_;
         if (deskActive && shakeAge < 0.5f) {
             headTilt.velocity += dt * 115.0f * std::cos(shakeAge * 30.0f) * (1.0f - shakeAge * 2.0f);
@@ -917,11 +1067,11 @@ public:
         float kpmBoost = deskActive ? std::min(2.4f, (float)engine.currentKPM() / 160.0f) : 0.0f;
         float petBoost = std::max(petHeadIntensity, petBodyIntensity) * 1.4f;
         float tailSpeed = (1.85f + kpmBoost + petBoost + hunt * 2.8f) * (1.0f - sleepiness * 0.86f);
-        tailPhase += dt * tailSpeed;
+        if (!dopey) tailPhase += dt * tailSpeed;
 
         // 8. Keycap glow decay
         std::unordered_set<PhysicalKey> visualActive;
-        if (deskActive) {
+        if (deskActive && !arcade) {
             for (PhysicalKey k : activeKeys) visualActive.insert(visualKeyOf(k));
         }
         for (auto it = keyGlow.begin(); it != keyGlow.end(); ) {
@@ -958,6 +1108,56 @@ public:
     }
 
 private:
+    std::unordered_map<PhysicalKey, int> arcadeKeyButtons_;
+    float arcadeTapUntil_[8]{};
+    size_t arcadeNextButton_ = 0;
+    int arcadeLastButton_ = 1;
+
+    void updateArcade(float dt, bool playing, bool overControl, const InputEngine& engine) {
+        if (!playing) {
+            arcadeStick.setTarget({});
+            arcadeButton = -1;
+            arcadePressure = 0;
+            arcadeKeyButtons_.clear();
+            arcadeNextButton_ = 0;
+            std::fill(std::begin(arcadeTapUntil_), std::end(arcadeTapUntil_), 0.0f);
+            std::fill(std::begin(arcadeButtonPressure), std::end(arcadeButtonPressure), 0.0f);
+            arcadeStick.step(dt, 200.0f, 20.0f);
+            return;
+        }
+
+        const float speed = std::hypot(engine.mouseVelocity.x, engine.mouseVelocity.y);
+        const float gain = overControl || speed < 18.0f ? 0.0f : 1.0f / std::max(420.0f, speed);
+        arcadeStick.setTarget({engine.mouseVelocity.x * 10.0f * gain, engine.mouseVelocity.y * 7.0f * gain});
+        arcadeStick.step(dt, 200.0f, 20.0f);
+
+        bool held[8]{};
+        for (auto it=arcadeKeyButtons_.begin(); it!=arcadeKeyButtons_.end();) {
+            if (engine.activeKeys.count(it->first)) {
+                held[it->second] = true;
+                ++it;
+            } else {
+                it = arcadeKeyButtons_.erase(it);
+            }
+        }
+        bool pressed[8]{};
+        int latest = -1;
+        arcadePressure = 0;
+        for (int i=0; i<8; ++i) {
+            pressed[i] = held[i] || time < arcadeTapUntil_[i];
+            float target = pressed[i] ? 1.0f : 0.0f;
+            arcadeButtonPressure[i] += std::clamp(target - arcadeButtonPressure[i], -dt*15.0f, dt*22.0f);
+            arcadePressure = std::max(arcadePressure, arcadeButtonPressure[i]);
+            if (pressed[i] && (latest < 0 || arcadeTapUntil_[i] > arcadeTapUntil_[latest])) latest = i;
+        }
+        if (arcadeButton < 0 || !pressed[arcadeButton]) arcadeButton = latest;
+        if (arcadeButton >= 0) arcadeLastButton_ = arcadeButton;
+        Pt ball = arcadeBall(), button = arcadeButtonCenter(arcadeLastButton_);
+        leftPaw.setTarget({ball.x, ball.y - 7.0f});
+        rightPaw.setTarget({button.x, button.y - 12.0f + 9.0f * arcadeButtonPressure[arcadeLastButton_]});
+        leftPawTyping = rightPawTyping = leftPawOnMouse = false;
+        hindFootActive.target = 0;
+    }
     static constexpr float workLimit_ = 25.0f * 60.0f;
     float workSeconds_ = 0.0f;
     double restStarted_ = 0.0;
@@ -990,6 +1190,125 @@ private:
     float tailKeyReach_ = 0.0f, tailKeyDip_ = 0.0f;
     double turnStarts_ = 0.0;
     double ignoreUntil_ = 0.0;
+    float dopeyIdleTime_ = 0;
+    float reachAge_ = 0, missedReach_ = 0, boxUntil_ = 0;
+    static constexpr float DopeyGestureDuration = 3.4f;
+    static constexpr int DopeyGestureCount = 5;
+    int clickedGesture_ = -1;
+    float clickedGestureUntil_ = 0;
+
+    struct GestureFrame {
+        float time;
+        Pt left, right;
+        float rollDegrees, headDrop;
+        float reach = 0;
+    };
+
+    struct GestureHead { float tilt, drop; };
+
+    GestureHead poseReach(Pt cursor) {
+        const float beat = std::fmod(reachAge_, 1.08f);
+        const float flight = std::clamp((beat - 0.15f) / 0.66f, 0.0f, 1.0f);
+        const float arc = 4 * flight * (1 - flight);
+        const float dip = beat < 0.15f ? std::sin(beat * 3.141593f / 0.15f) :
+            std::sin(std::clamp((beat - 0.81f) / 0.18f, 0.0f, 1.0f) * 3.141593f);
+        jumpLift = 36 * arc - 4 * dip;
+        const float stretch = ease(arc);
+        const float x = SeatAnchor.x + bodyShiftX.value;
+        const float center = x + std::clamp(cursor.x - x, -48.0f, 48.0f) * stretch;
+        const float spread = 23 - 12 * stretch + 32 * std::sin(stretch * 3.141593f);
+        const float y = 183 - jumpLift + (std::max(cursor.y, 61.0f) - 147) * stretch;
+        leftPaw.setTarget({center - spread, y});
+        rightPaw.setTarget({center + spread, y});
+        return {(cursor.x - x) * 0.0013f * arc, 3 * dip - 3 * arc};
+    }
+
+    GestureHead poseDopeyHands(int gesture, float t) {
+        static constexpr GestureFrame wave[] = {
+            {0.00f, {-15, 0}, {15, 0}, 0, 0},
+            {0.15f, {-18, 5}, {18, 4}, -4, 5},
+            {0.37f, {-49, -45}, {31, 5}, 9, -4},
+            {0.55f, {-58, -50}, {33, 7}, 12, -5},
+            {0.72f, {-43, -33}, {29, 4}, 4, 1},
+            {0.90f, {-65, -49}, {35, 8}, 13, -3},
+            {1.13f, {-44, -32}, {30, 4}, 4, 1},
+            {1.34f, {-65, -49}, {35, 8}, 13, -3},
+            {1.72f, {-61, -46}, {33, 7}, 10, -2},
+            {1.94f, {-43, -34}, {30, 4}, 4, 1},
+            {2.16f, {-65, -48}, {35, 8}, 13, -3},
+            {2.47f, {-58, -45}, {32, 6}, 9, -2},
+            {2.84f, {-30, -10}, {22, 4}, 3, 2},
+            {3.18f, {-15, 0}, {15, 0}, 0, 0},
+        };
+        static constexpr GestureFrame clap[] = {
+            {0.00f, {-15, 0}, {15, 0}, 0, 0},
+            {0.24f, {-45, -1}, {45, -1}, 0, -2},
+            {0.33f, {-13, -6}, {13, -6}, 0, 3},
+            {0.44f, {-13, -6}, {13, -6}, 0, 3},
+            {0.61f, {-45, -1}, {45, -1}, 0, -2},
+            {0.64f, {-45, -1}, {45, -1}, 0, -2},
+            {0.95f, {-15, 0}, {15, 0}, 0, 0},
+        };
+        static constexpr GestureFrame think[] = {
+            {0.00f, {-15, 0}, {15, 0}, 0, 0},
+            {0.16f, {-20, 3}, {21, 2}, 3, 3},
+            {0.40f, {-4, -24}, {18, -7}, -4, -2},
+            {0.72f, {-4, -24}, {18, -7}, -9, 1},
+            {1.04f, {-5, -23}, {17, -8}, -12, 4},
+            {1.74f, {-5, -23}, {17, -8}, -12, 4},
+            {2.02f, {-7, -26}, {17, -8}, -8, -2},
+            {2.43f, {-7, -26}, {17, -8}, -8, -2},
+            {2.84f, {-12, -8}, {16, -3}, -3, 1},
+            {3.17f, {-15, 0}, {15, 0}, 0, 0},
+        };
+        static constexpr GestureFrame attention[] = {
+            {0.00f, {-15, 0}, {15, 0}, 0, 0},
+            {0.13f, {-18, 4}, {18, 4}, 0, 5},
+            {0.28f, {-39, -9}, {39, -9}, 0, -7},
+            {0.42f, {-38, -8}, {38, -8}, 0, -6},
+            {0.57f, {-32, 18}, {32, 18}, 0, -1},
+            {0.74f, {-32, 15}, {32, 15}, 0, -3},
+            {2.28f, {-32, 15}, {32, 15}, 0, -3},
+            {2.54f, {-30, 13}, {30, 13}, 2, 1},
+            {2.98f, {-15, 0}, {15, 0}, 0, 0},
+        };
+        static constexpr GestureFrame boxing[] = {
+            {0.00f, {-15, 0}, {15, 0}, 0, 0, 0},
+            {0.24f, {-18, -12}, {18, -12}, 0, 1, 0},
+            {0.32f, {-32, -26}, {15, -10}, 9, -4, -1},
+            {0.40f, {-32, -26}, {15, -10}, 9, -4, -1},
+            {0.49f, {-18, -12}, {18, -12}, 0, 1, 0},
+            {0.61f, {-15, -10}, {32, -26}, -9, -4, 1},
+            {0.69f, {-15, -10}, {32, -26}, -9, -4, 1},
+            {0.82f, {-18, -12}, {18, -12}, 0, 1, 0},
+            {1.05f, {-15, 0}, {15, 0}, 0, 0, 0},
+        };
+        struct Clip { const GestureFrame* frames; size_t count; };
+        static constexpr Clip clips[] = {
+            {wave, std::size(wave)}, {clap, std::size(clap)},
+            {think, std::size(think)}, {attention, std::size(attention)}, {boxing, std::size(boxing)}
+        };
+        static_assert(std::size(clips) == DopeyGestureCount);
+        const auto& clip = clips[gesture];
+        if ((gesture == 1 || gesture == 4) && t >= 0.24f) {
+            const float period = gesture == 1 ? 0.40f : 0.58f;
+            const int repeats = gesture == 1 ? 7 : 5;
+            const float age = t - 0.24f;
+            t = age < period * repeats ? 0.24f + std::fmod(age, period) : t - period * (repeats - 1);
+        }
+        size_t next = 1;
+        while (next + 1 < clip.count && t > clip.frames[next].time) ++next;
+        const auto& a = clip.frames[next-1];
+        const auto& b = clip.frames[next];
+        float mix = ease((t-a.time)/(b.time-a.time));
+        auto blend = [mix](float start, float end) { return start + (end-start)*mix; };
+        float x = SeatAnchor.x + bodyShiftX.value, y = 184 + breathingOffset();
+        leftPaw.setTarget({x + blend(a.left.x,b.left.x), y + blend(a.left.y,b.left.y)});
+        rightPaw.setTarget({x + blend(a.right.x,b.right.x), y + blend(a.right.y,b.right.y)});
+        punchReach.target = blend(a.reach,b.reach);
+        return {blend(a.rollDegrees,b.rollDegrees) * 0.017453293f, blend(a.headDrop,b.headDrop)};
+    }
+
     float breathPhase_ = 0.0f;
 
     void flattenEars() {

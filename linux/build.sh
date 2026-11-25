@@ -2,12 +2,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-OUT="$ROOT/kurocat"
+OUT="$ROOT/sachicat"
+VERSION="$(tr -d '\r\n' < "$ROOT/../VERSION")"
 
-echo "==> Building KuroCat for Linux (C++17 / GTK3 + Cairo + XInput2 + evdev)..."
+echo "==> Building SachiCat for Linux (C++17 / GTK3 + Cairo + XInput2 + evdev)..."
 # Release builds run inside Debian 10 (glibc 2.28 / GCC 8, see .github/workflows/build.yml) so the
 # binary also starts on 统信 UOS 20 and 银河麒麟 V10, whose glibc is older than Ubuntu 22.04's.
-g++ -std=c++17 -O2 -Wall -Wextra \
+g++ -DSACHICAT_VERSION_STR="\"$VERSION\"" -std=c++17 -O2 -Wall -Wextra \
     "$ROOT/src/main.cpp" \
     -o "$OUT" \
     $(pkg-config --cflags --libs gtk+-3.0 cairo x11 xi) \

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="360" viewBox="0 0 480 360">
+  <defs>
+    <radialGradient id="hood" cx=".31" cy=".19" r=".89">
+      <stop stop-color="#8499d9"/><stop offset=".51" stop-color="#6379bb"/><stop offset=".81" stop-color="#43548e"/><stop offset="1" stop-color="#2a335c"/>
+    </radialGradient>
+    <linearGradient id="ear" x1="0" x2=".92" y2=".74">
+      <stop stop-color="#9aace5"/><stop offset=".55" stop-color="#798fcd"/><stop offset="1" stop-color="#596ca8"/>
+    </linearGradient>
+    <radialGradient id="cream" cx=".39" cy=".23" r=".85">
+      <stop stop-color="#fff9e5"/><stop offset=".55" stop-color="#f5ebce"/><stop offset=".86" stop-color="#e2ceaa"/><stop offset="1" stop-color="#caae87"/>
+    </radialGradient>
+    <radialGradient id="faceMask" cx=".5" cy=".54" r=".5">
+      <stop stop-color="#79543c" stop-opacity=".86"/><stop offset=".35" stop-color="#987152" stop-opacity=".68"/><stop offset=".65" stop-color="#b48d6c" stop-opacity=".4"/><stop offset="1" stop-color="#b48d6c" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="shirt" cx=".28" cy=".2" r=".9">
+      <stop stop-color="#54649b"/><stop offset=".61" stop-color="#354574"/><stop offset="1" stop-color="#242d50"/>
+    </radialGradient>
+    <linearGradient id="foot" x1=".2" x2=".84" y2="1"><stop stop-color="#e5cca2"/><stop offset="1" stop-color="#b28d63"/></linearGradient>
+    <linearGradient id="sideCoat" x1=".1" y1="0" x2=".65" y2="1"><stop stop-color="#788bc2"/><stop offset=".48" stop-color="#566aa3"/><stop offset="1" stop-color="#36446d"/></linearGradient>
+    <linearGradient id="tieCloth" x1=".45" y1="0" x2=".55" y2="1"><stop stop-color="#707278"/><stop offset=".40" stop-color="#5a5d64"/><stop offset="1" stop-color="#393e46"/></linearGradient>
+  </defs>
+  <!-- Each 120-unit tile has a local origin at its centre. -->
+  <g transform="translate(60 60)">
+    <path d="M0 -36 C24 -36 42 -23 47 -4 C50 8 55 19 49 29 C41 42 19 48 0 49 C-20 48 -40 42 -49 30 C-56 20 -50 8 -48 -4 C-44 -23 -25 -36 0 -36Z" fill="url(#hood)"/>
+  </g>
+  <g transform="translate(180 60)">
+    <path d="M-10 16 C-15 9 -16 -24 -13 -38 C-12 -44 -9 -45 -4 -43 C9 -37 25 -19 33 -5 Q30 12 12 18Z" fill="url(#ear)"/>
+  </g>
+  <g transform="translate(300 60)">
+    <path d="M0 -20 C19 -21 32 -7 34 10 C36 26 21 37 1 38 C-19 39 -35 29 -34 13 C-34 -3 -18 -19 0 -20Z" fill="url(#cream)" stroke="#485578" stroke-width="1.2"/>
+    <ellipse cx="0" cy="11" rx="27" ry="22" fill="url(#faceMask)"/>
+    <path d="M-7.3 9.8 C-7.6 11.5 -9.6 13.2 -9.1 15.1 C-8.1 20.4 -1.1 20.2 0 15.2 C.8 20 7.8 20.3 9 15.5 C9.5 13.6 7.4 11.2 7.2 9.9" fill="none" stroke="#343630" stroke-width="2.45" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g transform="translate(420 60)">
+    <ellipse rx="8.7" ry="9.0" fill="#34362e"/>
+    <ellipse cy=".2" rx="6.95" ry="7.25" fill="#fff9e7"/>
+    <ellipse cx="1.55" cy="-1.25" rx="6.1" ry="6.55" fill="#282a24"/>
+  </g>
+  <g transform="translate(60 180)">
+    <path d="M-31 -17 Q-38 -3 -34 10 C-26 22 23 23 34 10 Q39 -1 30 -18Z" fill="url(#foot)"/>
+    <path d="M-25 -51 Q0 -57 24 -51 C31 -45 42 -16 38 1 C34 16 -28 19 -37 4 C-42 -10 -35 -36 -25 -51Z" fill="url(#shirt)"/>
+  </g>
+  <g transform="translate(180 180)"><circle r="15.2" fill="url(#cream)"/></g>
+  <g transform="translate(300 180)"><path d="M-11 -9 Q0 -17 11 -9 L10 7 Q9 15 0 15 Q-11 14 -11 6Z" fill="url(#foot)"/></g>
+  <!-- Side-lying hips and smock, with the nearer hind foot overlapping the hem. -->
+  <g transform="translate(420 180)">
+    <ellipse cx="-33" cy="10" rx="15" ry="12" transform="rotate(-35 -33 10)" fill="url(#cream)"/>
+    <path d="M-32 -8 Q-29 -25 -16 -25 C-6 -25 2 -18 8 -7 L13 24 Q-6 34 -28 29 Q-40 23 -37 9Z" fill="url(#cream)"/>
+    <path d="M-12 -22 Q4 -32 24 -29 Q43 -27 49 -7 Q54 13 39 22 C25 28 5 31 -14 30 Q-17 29 -16 24 Q-10 1 -12 -22Z" fill="url(#sideCoat)"/>
+    <path d="M-37 9 C-32 4 -23 7 -23 13 Q-24 23 -34 31 C-40 36 -48 32 -49 25 Q-50 18 -37 9Z" fill="url(#cream)"/>
+  </g>
+  <!-- Back-of-neck tie. The flat cut at the broad end remains readable in silhouette. -->
+  <g transform="translate(60 300)">
+    <path d="M-28 -2 C-18 -5 -4 -9 12 -10 Q17 -11 21 -8 L28 -4 Q30 -2 28 1 L22 8 Q20 10 16 10 C2 10 -12 6 -27 4Z" fill="url(#tieCloth)"/>
+    <path d="M-26 2 Q-6 3 15 7 Q21 8 26 3 L22 8 Q20 10 16 10 C2 10 -12 6 -27 4Z" fill="#272b31" opacity=".45"/>
+  </g>
+</svg>

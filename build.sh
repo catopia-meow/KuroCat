@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-APP_NAME="KuroCat"
+APP_NAME="SachiCat"
 APP_BUNDLE="$ROOT/${APP_NAME}.app"
 CONTENTS="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS/MacOS"
@@ -11,8 +11,10 @@ RES_DIR="$CONTENTS/Resources"
 echo "==> Building ${APP_NAME}.app..."
 mkdir -p "$MACOS_DIR" "$RES_DIR"
 
+cp "$ROOT/Resources/DopeyCat.png" "$RES_DIR/DopeyCat.png"
 cp "$ROOT/Resources/Info.plist" "$CONTENTS/Info.plist"
-VERSION="$(plutil -extract CFBundleShortVersionString raw "$CONTENTS/Info.plist")"
+VERSION="$(tr -d '\r\n' < "$ROOT/VERSION")"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$CONTENTS/Info.plist"
 plutil -replace CFBundleVersion -string "$VERSION" "$CONTENTS/Info.plist"
 
 if [ -f "$ROOT/Resources/AppIcon.icns" ]; then
@@ -92,6 +94,7 @@ SWIFT_SOURCES=(
     "$ROOT/Sources/InputEngine.swift"
     "$ROOT/Sources/CatPhysics.swift"
     "$ROOT/Sources/CatRenderer.swift"
+    "$ROOT/Sources/DopeyArt.swift"
     "$ROOT/Sources/CoatPatterns.swift"
     "$ROOT/Sources/SystemAudio.swift"
     "$ROOT/Sources/DeskDetection.swift"

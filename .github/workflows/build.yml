@@ -1,4 +1,4 @@
-name: Build KuroCat (macOS, Windows & Linux/UOS)
+name: Build SachiCat (macOS, Windows & Linux/UOS)
 
 on:
   push:
@@ -23,18 +23,18 @@ jobs:
         with:
           arch: x64
 
-      - name: Build standalone KuroCat.exe
+      - name: Build standalone SachiCat.exe
         shell: cmd
         run: |
           cd windows
           call build.bat
-          dir KuroCat.exe
+          dir SachiCat.exe
 
       - name: Upload Windows binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KuroCat-Windows-x64
-          path: windows/KuroCat.exe
+          name: SachiCat-Windows-x64
+          path: windows/SachiCat.exe
 
   build-macos:
     runs-on: macos-latest
@@ -50,18 +50,18 @@ jobs:
       - name: Check covered eye pixels
         run: bash scripts/check-eye-closure.sh
 
-      - name: Build Universal KuroCat.app (Apple Silicon + Intel)
+      - name: Build Universal SachiCat.app (Apple Silicon + Intel)
         run: |
           chmod +x build.sh
           ./build.sh
-          ditto -c -k --sequesterRsrc --keepParent KuroCat.app KuroCat-macOS-universal.zip
-          ls -lh KuroCat-macOS-universal.zip
+          ditto -c -k --sequesterRsrc --keepParent SachiCat.app SachiCat-macOS-universal.zip
+          ls -lh SachiCat-macOS-universal.zip
 
       - name: Upload macOS universal app artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KuroCat-macOS-universal
-          path: KuroCat-macOS-universal.zip
+          name: SachiCat-macOS-universal
+          path: SachiCat-macOS-universal.zip
 
   build-linux:
     strategy:
@@ -83,13 +83,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build KuroCat Linux binary, .deb and .tar.gz in Debian 10 (glibc 2.28)
+      - name: Build SachiCat Linux binary, .deb and .tar.gz in Debian 10 (glibc 2.28)
         shell: bash
         run: |
-          DEB_VER="${GITHUB_REF_NAME#v}"
-          if [[ ! "$DEB_VER" =~ ^[0-9]+\.[0-9]+ ]]; then DEB_VER="1.2.0"; fi
           docker run --rm -v "$PWD":/src -w /src \
-            -e DEB_VER="$DEB_VER" -e TAR_ARCH="${{ matrix.tar_arch }}" -e KUROCAT_MAX_GLIBC=2.28 \
+            -e TAR_ARCH="${{ matrix.tar_arch }}" -e KUROCAT_MAX_GLIBC=2.28 \
             debian:buster bash -euo pipefail -c '
               # buster is archived: point apt at archive.debian.org
               sed -i -e "s|deb.debian.org|archive.debian.org|g" \
@@ -100,27 +98,30 @@ jobs:
                 g++ pkg-config libgtk-3-dev libcairo2-dev libx11-dev libxi-dev dpkg-dev binutils
               cd linux
               chmod +x build.sh build_deb.sh install.sh uninstall.sh
-              ./build.sh
-              ./build_deb.sh "$DEB_VER"
-              tar -czf "KuroCat-Linux-${TAR_ARCH}.tar.gz" \
-                kurocat kurocat.desktop kurocat.svg install.sh uninstall.sh 安装说明.txt
+              ./build_deb.sh
+              tar -czf "SachiCat-Linux-${TAR_ARCH}.tar.gz" \
+                sachicat kurocat.desktop kurocat.svg install.sh uninstall.sh 安装说明.txt
             '
           sudo chown -R "$(id -u):$(id -g)" linux
-          ls -lh "linux/KuroCat-Linux-${{ matrix.arch }}.deb" "linux/KuroCat-Linux-${{ matrix.tar_arch }}.tar.gz"
+          ls -lh "linux/SachiCat-Linux-${{ matrix.arch }}.deb" "linux/SachiCat-Linux-${{ matrix.tar_arch }}.tar.gz"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KuroCat-Linux-${{ matrix.arch }}
+          name: SachiCat-Linux-${{ matrix.arch }}
           path: |
-            linux/KuroCat-Linux-${{ matrix.arch }}.deb
-            linux/KuroCat-Linux-${{ matrix.tar_arch }}.tar.gz
+            linux/SachiCat-Linux-${{ matrix.arch }}.deb
+            linux/SachiCat-Linux-${{ matrix.tar_arch }}.tar.gz
 
   release:
     needs: [ build-windows, build-macos, build-linux ]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - name: Match release tag to the packaged version
+        run: test "$GITHUB_REF_NAME" = "v$(cat VERSION)"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -128,16 +129,19 @@ jobs:
           merge-multiple: true
 
       - name: Rename Windows binary
-        run: mv dist/KuroCat.exe dist/KuroCat-Windows-x64.exe
+        run: mv dist/SachiCat.exe dist/SachiCat-Windows-x64.exe
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: SachiCat ${{ github.ref_name }}
+          body_path: .github/release-notes.md
+          fail_on_unmatched_files: true
           generate_release_notes: true
           files: |
-            dist/KuroCat-macOS-universal.zip
-            dist/KuroCat-Windows-x64.exe
-            dist/KuroCat-Linux-amd64.deb
-            dist/KuroCat-Linux-x86_64.tar.gz
-            dist/KuroCat-Linux-arm64.deb
-            dist/KuroCat-Linux-arm64.tar.gz
+            dist/SachiCat-macOS-universal.zip
+            dist/SachiCat-Windows-x64.exe
+            dist/SachiCat-Linux-amd64.deb
+            dist/SachiCat-Linux-x86_64.tar.gz
+            dist/SachiCat-Linux-arm64.deb
+            dist/SachiCat-Linux-arm64.tar.gz

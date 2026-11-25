@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             if self.showAudioFailure {
                 self.stopMusic()
-                self.showInfoAlert(title: "系统音频无法使用", message: "请在系统设置中允许 KuroCat 录制屏幕与系统音频，再点一次听音乐。")
+                self.showInfoAlert(title: "系统音频无法使用", message: "请在系统设置中允许 SachiCat 录制屏幕与系统音频，再点一次听音乐。")
             } else {
                 self.overlayWindow.catView.physics.sleepAfterMusicError()
             }
@@ -82,15 +82,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         setupStatusItem()
         if isAutoStartEnabled() {
-            // Keep LaunchAgent path updated if user moved KuroCat.app into /Applications
+            // Keep LaunchAgent path updated if user moved SachiCat.app into /Applications
             _ = setAutoStartEnabled(true)
         }
         startRenderLoop()
 
-        // Auto-check GitHub Releases for updates shortly after launch
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-            self?.checkForUpdates(manual: false)
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -102,9 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         InputEngine.shared.stop()
     }
 
-    // MARK: - One KuroCat at a time (newest copy wins)
+    // MARK: - One SachiCat at a time (newest copy wins)
 
-    /// Users often download a new KuroCat.app while an older copy is still running (or is started
+    /// Users often download a new SachiCat.app while an older copy is still running (or is started
     /// by the login item from another folder). That old process kept running and kept announcing
     /// "new version available" even though they had already updated. Keep only the newest copy:
     /// quit older ones, or hand over to an already-running newer one. Returns true if THIS process quits.
@@ -119,7 +115,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for other in others {
             guard let otherURL = other.bundleURL?.standardizedFileURL, otherURL != myURL,
                   let otherVersion = Self.shortVersion(ofAppAt: otherURL) else { continue }
-            if otherVersion.compare(currentAppVersion, options: .numeric) == .orderedDescending {
+            // Earlier fork releases used a single integer (for example 6).
+            if otherVersion.contains("."),
+               otherVersion.compare(currentAppVersion, options: .numeric) == .orderedDescending {
                 isHandingOverToNewerCopy = true
                 _ = other.activate(options: [])
                 NSApp.terminate(nil)
@@ -169,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 (physics.soundPlaying, physics.soundPulse) = self.audio.reading()
             }
             view.physics.step(dt: dt, windowFrameInScreen: self.overlayWindow.frame)
+            if view.isDragging && CatSettings.shared.coatTheme == .dopeyCat { physics.coastEgg(dt: dt) }
             view.updateHoverAndClickThrough()
             if engine.lastKeyActivityTime > self.observedKeyActivity {
                 self.observedKeyActivity = engine.lastKeyActivityTime
@@ -192,7 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
             button.image = makeMenuBarCatIcon()
-            button.toolTip = "KuroCat 黑猫键盘桌宠"
+            button.toolTip = "SachiCat 黑猫键盘桌宠"
         }
         let menu = NSMenu()
         menu.delegate = self
@@ -276,6 +275,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if action == .doubleClickWake { item.state = settings.doubleClickWake ? .on : .off }
             menu.addItem(item)
         }
+        let arcadeItem = NSMenuItem(title: "街机摇杆模式", action: #selector(selectArcadeMode), keyEquivalent: "")
+        arcadeItem.target = self
+        arcadeItem.state = settings.deskMode == .arcade ? .on : .off
+        menu.addItem(arcadeItem)
         let captureItem = NSMenuItem(title: "直播采集", action: nil, keyEquivalent: "")
         let captureMenu = NSMenu()
         for (title, selection) in [("透明窗口", 0), ("绿幕窗口（色度键）", 1)] {
@@ -304,16 +307,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         legendsItem.state = settings.showKeyLegends ? .on : .off
         menu.addItem(legendsItem)
 
-        let footItem = NSMenuItem(title: "高速打字彩蛋（左脚和尾巴）", action: #selector(toggleFootEgg), keyEquivalent: "")
-        footItem.target = self
-        footItem.state = settings.footEasterEgg ? .on : .off
-        menu.addItem(footItem)
+        if settings.coatTheme != .dopeyCat {
+            let footItem = NSMenuItem(title: "高速打字彩蛋（左脚和尾巴）", action: #selector(toggleFootEgg), keyEquivalent: "")
+            footItem.target = self
+            footItem.state = settings.footEasterEgg ? .on : .off
+            menu.addItem(footItem)
 
-        let petItem = NSMenuItem(title: "摸头/摸背闭眼互动", action: #selector(togglePetInteraction), keyEquivalent: "")
-        petItem.target = self
-        petItem.state = settings.petInteraction ? .on : .off
-        menu.addItem(petItem)
+            let petItem = NSMenuItem(title: "摸头/摸背闭眼互动", action: #selector(togglePetInteraction), keyEquivalent: "")
+            petItem.target = self
+            petItem.state = settings.petInteraction ? .on : .off
+            menu.addItem(petItem)
 
+        }
         menu.addItem(.separator())
 
         // Scale submenu
@@ -355,7 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let item = NSMenuItem(title: theme.rawValue, action: #selector(selectKeyboardTheme(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = theme.rawValue
-            item.state = settings.keyboardTheme == theme ? .on : .off
+            item.state = settings.activeKeyboardTheme == theme ? .on : .off
             kbMenu.addItem(item)
         }
         let kbParent = NSMenuItem(title: "键盘配色", action: nil, keyEquivalent: "")
@@ -386,17 +391,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         resetPosItem.target = self
         menu.addItem(resetPosItem)
 
-        let relaunchItem = NSMenuItem(title: "重启 KuroCat (授权后刷新)", action: #selector(relaunchApp), keyEquivalent: "")
+        let relaunchItem = NSMenuItem(title: "重启 SachiCat (授权后刷新)", action: #selector(relaunchApp), keyEquivalent: "")
         relaunchItem.target = self
         menu.addItem(relaunchItem)
 
-        let checkItem = NSMenuItem(title: "检查更新 · macOS 第 \(currentAppVersion) 版", action: #selector(manualCheckForUpdates), keyEquivalent: "")
+        let checkItem = NSMenuItem(title: "检查更新 · SachiCat v\(currentAppVersion)", action: #selector(openReleasePage), keyEquivalent: "")
         checkItem.target = self
         menu.addItem(checkItem)
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "退出 KuroCat", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "退出 SachiCat", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -428,12 +433,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             observedMouseActivity = InputEngine.shared.lastMouseMoveTime
         case .mode:
             CatSettings.shared.deskMode = CatSettings.shared.deskMode.next
+            if CatSettings.shared.deskMode == .arcade && physics.sleeping { physics.wake() }
             updateDeskMode()
         case .keyBubbles: CatSettings.shared.showKeyBadges.toggle()
         case .mouseBubbles: CatSettings.shared.showMouseBadges.toggle()
         case .hide: overlayWindow.toggleControls()
         case .music: break
         }
+    }
+
+    @objc private func selectArcadeMode() {
+        let physics = overlayWindow.catView.physics
+        if physics.listening { stopMusic() }
+        CatSettings.shared.deskMode = .arcade
+        if physics.sleeping { physics.wake() }
+        updateDeskMode()
     }
 
     private func updateDeskMode() {
@@ -450,7 +464,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         showAudioFailure = manual
         guard audio.start(requestPermission: manual) else {
             if manual {
-                showInfoAlert(title: "听音乐需要系统音频权限", message: "请在系统设置中允许 KuroCat 录制屏幕与系统音频，再点一次听音乐。")
+                showInfoAlert(title: "听音乐需要系统音频权限", message: "请在系统设置中允许 SachiCat 录制屏幕与系统音频，再点一次听音乐。")
             }
             return false
         }
@@ -576,6 +590,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             CatSettings.shared.eyeTheme = .siameseBlue
         case .shorthair, .orangeWhite:
             CatSettings.shared.eyeTheme = .softAmber
+        case .dopeyCat:
+            if overlayWindow.catView.physics.listening { stopMusic() }
+            overlayWindow.catView.physics.enterDopeySkin()
         case .orcaCat:
             CatSettings.shared.eyeTheme = .referenceHazel
         }
@@ -585,7 +602,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func selectKeyboardTheme(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let theme = KeyboardTheme(rawValue: raw) else { return }
-        CatSettings.shared.keyboardTheme = theme
+        CatSettings.shared.activeKeyboardTheme = theme
     }
 
     @objc private func selectEyeTheme(_ sender: NSMenuItem) {
@@ -625,42 +642,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - macOS release updates
 
-    private struct Release: Decodable {
-        let tag_name: String
-        let prerelease: Bool
-        let draft: Bool
-    }
-
-    @objc private func manualCheckForUpdates() {
-        checkForUpdates(manual: true)
-    }
-
-    private func checkForUpdates(manual: Bool) {
-        let endpoint = URL(string: "https://api.github.com/repos/catopia-meow/KuroCat/releases?per_page=100")!
-        let prefix = "orca-cat-macos-"
-        let version = Int(currentAppVersion)!
-        URLSession.shared.dataTask(with: endpoint) { [weak self] data, response, _ in
-            let releases: [Release]?
-            if let data, (response as? HTTPURLResponse)?.statusCode == 200 {
-                releases = try? JSONDecoder().decode([Release].self, from: data)
-            } else {
-                releases = nil
-            }
-            let latest = releases?.compactMap { release -> Int? in
-                guard !release.draft, !release.prerelease, release.tag_name.hasPrefix(prefix) else { return nil }
-                return Int(release.tag_name.dropFirst(prefix.count))
-            }.max()
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if let latest, latest > version {
-                    let page = URL(string: "https://github.com/catopia-meow/KuroCat/releases/tag/\(prefix)\(latest)")!
-                    NSWorkspace.shared.open(page)
-                } else if manual {
-                    self.showInfoAlert(title: releases == nil ? "检查更新失败" : "已是最新版本",
-                                       message: releases == nil ? "暂时无法读取 GitHub 发布信息。" : "当前为 macOS 第 \(version) 版。")
-                }
-            }
-        }.resume()
+    @objc private func openReleasePage() {
+        if !NSWorkspace.shared.open(URL(string: "https://github.com/catopia-meow/SachiCat/releases")!) {
+            showInfoAlert(title: "检查更新", message: "无法打开 GitHub 发布页。")
+        }
     }
 
     private func showInfoAlert(title: String, message: String) {

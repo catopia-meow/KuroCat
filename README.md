@@ -1,4 +1,4 @@
-# 🐱 KuroCat — 全状态键盘鼠标桌面萌猫 (macOS / Windows / Linux / 统信 UOS)
+# 🐱 SachiCat — 全状态键盘鼠标桌面萌猫 (macOS / Windows / Linux / 统信 UOS)
 
 <p align="center">
   <b>简体中文</b> | <a href="README.en.md">English</a>
@@ -12,11 +12,11 @@
 
 点击耳机图标后，虎鲸猫会戴上耳机。Windows 默认输出设备有声音时，它会闭眼跟拍，安静时会睁眼。再次点击耳机或选择另一个可用的控件，猫就会摘下耳机。声音只在本机实时分析。
 
-在自动模式下，进入 Blender、Krita 或 Photoshop 等受支持的绘画软件时，虎鲸猫会拿起画笔。切到文字输入框时，它会换回键鼠。托盘的「检查更新」查询本 fork，发现新版会打开对应的 GitHub 发布页。
+在自动模式下，进入 Blender、Krita 或 Photoshop 等受支持的绘画软件时，虎鲸猫会拿起画笔。切到文字输入框时，它会换回键鼠。点击托盘的「检查更新」，默认浏览器会直接打开[SachiCat GitHub 发布页](https://github.com/catopia-meow/SachiCat/releases)。
 
-[下载最新 Windows x64 程序](https://github.com/catopia-meow/KuroCat/releases/latest/download/KuroCat-OrcaCat-Windows-x64.exe)
+[下载最新 Windows x64 程序](https://github.com/catopia-meow/SachiCat/releases/latest)
 
-发布 Windows 版时，在 [OrcaVersion.h](windows/src/OrcaVersion.h) 更新发布编号。从生成的 EXE 文件版本取第一段，作为 GitHub 发布标签 `orca-cat-windows-N` 中的 `N`。
+各平台从仓库根目录的 [VERSION](VERSION) 读取版本。发布标签在版本号前加 `v`，例如 `v2.0`、`v2.0.1`。
 
 ![虎鲸猫图标栏、键鼠模式和闭眼听音乐](assets/preview_orca_cat_controls.png)
 
@@ -46,7 +46,7 @@
 - **🐾 丰富交互彩蛋**
   - **3 键同时按「用脚按」**：同时按住 3 个及以上按键时，小猫会翘起后脚踩上第 3 个键！
   - **摸头/摸背互动**：鼠标轻撸猫头会露出惬意闭眼 `— —` 与微光粒子，闲置久了还会打瞌睡冒 `z`。
-  - **智能鼠标穿透、开机自启 & 自动更新检测**：透明区域自动穿透不挡操作；玩竞技游戏时可一键开启「完全鼠标穿透（游戏防误触）」，支持一键勾选「开机自动启动」（Windows 注册表 / macOS LaunchAgent / Linux XDG Autostart），启动时自动检测新版本并在菜单栏/托盘提示更新。
+  - **智能鼠标穿透、开机自启**：透明区域自动穿透不挡操作；玩竞技游戏时可一键开启「完全鼠标穿透（游戏防误触）」，支持一键勾选「开机自动启动」（Windows 注册表 / macOS LaunchAgent / Linux XDG Autostart）。
 - **🎨 四款皮肤 & 多配色自由搭配**
   - **猫咪皮肤**：经典小黑猫（原版荧光黄绿瞳）/ 挖煤暹罗猫（暖燕麦奶白 + 2.5D 焦糖面罩 + 巧克力小袜子 + 宝石蓝瞳）/ 美短（银虎斑加白 + 平顶白色额纹）/ 橘白猫（橘色头顶 + 白胸与白手套）
   - **键盘配色**：经典奶白暖黄 / 暗夜极客黑 / 复古奶油灰（支持开关键盘字符、按键气泡与鼠标点击气泡）
@@ -74,40 +74,40 @@
 
 > **本次更新的 macOS 版本尚未在 Mac 上实机测试。**
 
-1. 下载 [KuroCat-macOS-universal.zip](https://github.com/catopia-meow/KuroCat/releases/latest/download/KuroCat-macOS-universal.zip) 解压，将 `KuroCat.app` 拖入「应用程序」打开（常驻顶部菜单栏，不占 Dock）。
-2. 首次使用点击小猫底部提示胶囊，前往 **系统设置 → 隐私与安全性 → 输入监控** 勾选 `KuroCat` 后在菜单栏点「重启 KuroCat」即可全局监听打字与游戏按键。
+1. 下载 [SachiCat-macOS-universal.zip](https://github.com/catopia-meow/SachiCat/releases/latest) 解压，将 `SachiCat.app` 拖入「应用程序」打开（常驻顶部菜单栏，不占 Dock）。
+2. 首次使用点击小猫底部提示胶囊，前往 **系统设置 → 隐私与安全性 → 输入监控** 勾选 `SachiCat` 后在菜单栏点「重启 SachiCat」即可全局监听打字与游戏按键。
 3. 支持在菜单中一键开启 **开机自动启动**；开启「完全鼠标穿透」后，可通过顶部菜单栏小猫图标或 **按住 `⌥ Option` 键直接右键/拖动小猫**。
 
 **直播采集**
 
-- 右键虎鲸猫，选择「直播采集 → 透明窗口」。在 OBS 添加「macOS 屏幕采集」，将方式设为窗口采集，并选择 `KuroCat`。如果列表中没有桌宠，开启「显示全屏和隐藏的窗口/应用程序」。
+- 右键虎鲸猫，选择「直播采集 → 透明窗口」。在 OBS 添加「macOS 屏幕采集」，将方式设为窗口采集，并选择 `SachiCat`。如果列表中没有桌宠，开启「显示全屏和隐藏的窗口/应用程序」。
 - 如果采集软件没有保留透明背景，选择「直播采集 → 绿幕窗口（色度键）」，在采集来源中添加绿色色度键滤镜（`#00FF00`）。
 
 **本地源码编译：**
 ```bash
 chmod +x build.sh
 ./build.sh
-open KuroCat.app
+open SachiCat.app
 ```
 
 ### 🪟 Windows (Windows 10 / 11 x64)
-1. 下载单文件 `KuroCat-Windows-x64.exe`（约 220 KB，**零外部运行时依赖**），双击即可运行，常驻右下角系统托盘。
+1. 下载单文件 `SachiCat-Windows-x64.exe`（约 220 KB，**零外部运行时依赖**），双击即可运行，常驻右下角系统托盘。
 2. 右键小猫或左键/右键托盘小猫图标即可切换皮肤、键盘配色、尺寸、**开机自动启动**、游戏防误触穿透模式等。
 3. **开启「完全鼠标穿透」后，以下 4 种方式均可随时取消或呼出菜单**：
    - 全局快捷键：**`Ctrl + Alt + Shift + P`** 一键切换/取消穿透；
    - 临时解锁：按住 **`Alt`** 键，再直接右键小猫取消勾选或左键拖动；
    - 系统托盘：点击任务栏右下角 **`^` 隐藏图标区** 中的黑猫图标（左键或右键均可弹出菜单）；
-   - 保底方式：**再次双击 `KuroCat.exe`**，会自动取消穿透并直接在鼠标处弹出设置菜单。
+   - 保底方式：**再次双击 `SachiCat.exe`**，会自动取消穿透并直接在鼠标处弹出设置菜单。
    > **游戏里小猫只跟鼠标、不跟键盘？** 这类游戏（及 WeGame 等启动器）以管理员权限运行，Windows 会拦截它的键盘输入。右键小猫 →「以管理员身份重新启动」即可；想一劳永逸可勾选「每次启动都以管理员身份运行」。小猫检测到这种游戏时也会在托盘弹出提示。
    >
    > **进游戏小猫消失？** 小猫会在全屏/无边框游戏切到前台后自动重新置顶，游戏切换分辨率后也会自动回到屏幕内。如果游戏用的是「独占全屏」，任何桌面窗口都无法盖在上面，请在游戏设置里改成「无边框窗口 / 窗口化全屏」。
    >
-   > **下载了新版却还提示更新？** 旧版小猫还在后台运行。新版启动时会自动结束旧版并接管；更新提示里也会显示当前运行的程序路径，方便找到并删除旧的 exe。
+   > 运行新版程序时，它会接管正在运行的旧版桌宠。
 
 **直播采集**
 
-- 右键虎鲸猫，选择「直播采集 → 透明窗口（WGC）」。在 OBS 的「窗口采集」中选中 `KuroCat`，采集方式选「新版 (WGC)」。旧版 OBS 将此选项显示为「Windows 10 (1903 及以上)」。
-- 如果采集软件没有保留透明背景，选择「直播采集 → 绿幕窗口（色度键）」。采集 `KuroCat` 窗口，再添加绿色色度键滤镜（`#00FF00`）。OBS 的「自动」采集方式可用于此模式。
+- 右键虎鲸猫，选择「直播采集 → 透明窗口（WGC）」。在 OBS 的「窗口采集」中选中 `SachiCat`，采集方式选「新版 (WGC)」。旧版 OBS 将此选项显示为「Windows 10 (1903 及以上)」。
+- 如果采集软件没有保留透明背景，选择「直播采集 → 绿幕窗口（色度键）」。采集 `SachiCat` 窗口，再添加绿色色度键滤镜（`#00FF00`）。OBS 的「自动」采集方式可用于此模式。
 
 **本地源码编译（MSVC / MinGW）：**
 ```bat
@@ -124,18 +124,18 @@ cmake -B build && cmake --build build --config Release
 支持 **Ubuntu 20.04+ / Debian 11+ / Deepin / 统信 UOS（x86_64 & ARM64 飞腾/鲲鹏）/ 银河麒麟 / Arch / Fedora**：
 
 1. **免密码安装（推荐统信 UOS / 银河麒麟，不需要开机密码）**：
-   - 下载 `KuroCat-Linux-x86_64.tar.gz`（Intel/AMD/兆芯/海光）或 `KuroCat-Linux-arm64.tar.gz`（飞腾/鲲鹏等 ARM64），解压。
-   - 在解压出的文件夹里右键「在终端中打开」，执行 `bash install.sh`。程序只装到当前用户的 `~/.local`，装完自动启动，开始菜单可搜到 **KuroCat**；卸载执行 `bash uninstall.sh`。
+   - 下载 `SachiCat-Linux-x86_64.tar.gz`（Intel/AMD/兆芯/海光）或 `SachiCat-Linux-arm64.tar.gz`（飞腾/鲲鹏等 ARM64），解压。
+   - 在解压出的文件夹里右键「在终端中打开」，执行 `bash install.sh`。程序只装到当前用户的 `~/.local`，装完自动启动，开始菜单可搜到 **SachiCat**；卸载执行 `bash uninstall.sh`。
    - 压缩包里的 `安装说明.txt` 有麒麟「应用执行控制」、统信「开发者模式」、CPU 架构不匹配等常见问题的处理方法。
 2. **`.deb` 安装包（统信 UOS / Deepin / Ubuntu / Debian / 麒麟）**：
-   - 双击 `KuroCat-Linux-amd64.deb` / `KuroCat-Linux-arm64.deb` 用软件包安装器安装（系统会要求输入开机密码），或终端执行：
+   - 双击 `SachiCat-Linux-amd64.deb` / `SachiCat-Linux-arm64.deb` 用软件包安装器安装（系统会要求输入开机密码），或终端执行：
      ```bash
-     sudo apt install ./KuroCat-Linux-amd64.deb
+     sudo apt install ./SachiCat-Linux-amd64.deb
      ```
-   - 安装包在 Debian 10（glibc 2.28）环境中编译，统信 UOS 20、银河麒麟 V10 等较老的系统也能运行；之后在软件内「检查更新」会装到当前用户目录，**不再需要输入密码**。
+   - 安装包在 Debian 10（glibc 2.28）环境中编译，统信 UOS 20、银河麒麟 V10 等较老的系统也能运行。
    - **麒麟安装失败**：「安全中心」→「应用保护 / 应用执行控制」改为「关闭」或「警告」后再装，或直接用上面的免密码安装。
 3. **其他 Linux 发行版（Arch / Fedora 等）**：
-   - 解压 tar.gz 后运行 `bash install.sh`，或直接运行 `./kurocat`。
+   - 解压 tar.gz 后运行 `bash install.sh`，或直接运行 `./sachicat`。
    - 若使用纯 **Wayland** 会话，执行一次 `sudo usermod -aG input $USER` 并重新登录即可启用 `evdev` 内核级全局监听。
 4. **电脑变卡？** 默认使用省电自适应帧率（打字/移动鼠标时 30fps、空闲 20fps、睡觉 10fps）；右键小猫可开启「高帧率 60fps」，低配电脑请保持关闭。
 5. **龙芯（LoongArch / MIPS）本地源码编译**：
@@ -167,7 +167,7 @@ KuroCat/
 
 ## 🔒 隐私说明
 
-KuroCat 的所有键盘与鼠标硬件信号**仅在本地内存实时驱动桌宠动画与计数**，**绝不记录按键内容、绝不写日志**；除启动或手动点击「检查更新」时请求官方下载站获取最新版本号外无任何其他联网行为，全部源码完全开源可审计。
+SachiCat 的所有键盘与鼠标硬件信号**仅在本地内存实时驱动桌宠动画与计数**，**绝不记录按键内容、绝不写日志**。桌宠不会在后台联网查询更新。
 
 ## 📄 License
 

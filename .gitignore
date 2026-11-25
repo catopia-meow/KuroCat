@@ -1,11 +1,13 @@
 .DS_Store
 KuroCat.app/
+SachiCat.app/
 LiveDemos/
 windows/*.exe
 windows/build/
 windows/*.obj
 windows/*.pdb
 linux/kurocat
+linux/sachicat
 linux/*.deb
 linux/*.tar.gz
 preview.png

@@ -17,8 +17,8 @@ if errorlevel 1 goto :failed
 pushd windows
 call build.bat
 if errorlevel 1 goto :failed
-if not exist KuroCat.exe goto :failed
-start "" "%CD%\KuroCat.exe"
+if not exist SachiCat.exe goto :failed
+start "" "%CD%\SachiCat.exe"
 exit /b 0
 :novs
 echo Visual Studio C++ x64 build tools were not found.

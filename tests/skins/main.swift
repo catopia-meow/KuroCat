@@ -4,6 +4,8 @@ final class RenderSettings {
  static let shared = RenderSettings()
  var coatTheme = CatCoatTheme.classicBlack
  var eyeTheme = EyeColorTheme.neonChartreuse
+ var deskMode = DeskMode.keyboard
+ var activeKeyboardTheme: KeyboardTheme { coatTheme == .dopeyCat ? .dopeyBlue : keyboardTheme }
  var keyboardTheme = KeyboardTheme.classicMilk
  let showKeyBadges = false
  let showKeyLegends = false
@@ -117,6 +119,7 @@ for coat in CatCoatTheme.allCases {
 print("PASS: extreme head and body poses preserve face pixels while working")
 
 let reaction = CatPhysics()
+RenderSettings.shared.coatTheme = .orcaCat
 let stomach = CGPoint(x: 184, y: 204), keyboard = CGPoint(x: 180, y: 245)
 precondition(CurrentRenderer.hitTest(point: stomach, physics: reaction, showPermissionPill: false) == .belly)
 precondition(CurrentRenderer.hitTest(point: keyboard, physics: reaction, showPermissionPill: false) == .desk)

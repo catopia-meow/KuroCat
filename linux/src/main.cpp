@@ -28,17 +28,11 @@
 #include <fcntl.h>
 #include <glib-unix.h>
 
-#define KUROCAT_VERSION_STR "1.3.3"
-static constexpr const char* APP_VERSION = KUROCAT_VERSION_STR;
+static constexpr const char* APP_VERSION = SACHICAT_VERSION_STR;
 // Other KuroCat builds scan installed binaries for this marker (see readBinaryVersion) to find the
-// newest copy WITHOUT executing it. Always derived from KUROCAT_VERSION_STR.
-__attribute__((used)) static const char kVersionMarker[] = "KUROCAT_VERSION=" KUROCAT_VERSION_STR;
-static constexpr const char* UPDATE_PAGE_URL = "https://kurocat-download.app.workbuddy.host/?sharecode=JVAABIVZ7L";
-#if defined(__aarch64__) || defined(_M_ARM64)
-static constexpr const char* UPDATE_TAR_URL = "https://kurocat-download.app.workbuddy.host/downloads/KuroCat-Linux-arm64.tar.gz?sharecode=JVAABIVZ7L";
-#else
-static constexpr const char* UPDATE_TAR_URL = "https://kurocat-download.app.workbuddy.host/downloads/KuroCat-Linux-x86_64.tar.gz?sharecode=JVAABIVZ7L";
-#endif
+// newest copy WITHOUT executing it. Always derived from SACHICAT_VERSION_STR.
+__attribute__((used)) static const char kVersionMarker[] = "KUROCAT_VERSION=" SACHICAT_VERSION_STR;
+static constexpr const char* RELEASE_PAGE = "https://github.com/catopia-meow/SachiCat/releases";
 
 struct LinuxApp {
     GtkWidget* window = nullptr;
@@ -64,10 +58,6 @@ struct LinuxApp {
     bool demoActive = false;
     double demoStartTime = 0.0;
     int demoStepIdx = 0;
-
-    std::string availableUpdateVersion;
-    std::string availableUpdateUrl;
-    bool isUpdating = false;
 
     // Cached window geometry (updated from configure-event). Querying it from the X server every
     // frame cost several synchronous round-trips per frame.
@@ -125,7 +115,7 @@ static std::string homeDir() {
 }
 
 static std::string userLocalBinPath() {
-    return homeDir() + "/.local/bin/kurocat";
+    return homeDir() + "/.local/bin/sachicat";
 }
 
 static std::string resolvedPath(const std::string& p) {
@@ -144,7 +134,7 @@ static void redirectToNewestInstalledCopy(char** argv) {
     std::string self = n > 0 ? std::string(selfBuf, (size_t)n) : std::string();
     int best = versionToNumber(APP_VERSION);
     std::string bestPath;
-    const std::string candidates[] = { userLocalBinPath(), "/usr/bin/kurocat", "/usr/local/bin/kurocat" };
+    const std::string candidates[] = { userLocalBinPath(), "/usr/bin/sachicat", "/usr/local/bin/sachicat" };
     for (const auto& c : candidates) {
         if (access(c.c_str(), X_OK) != 0) continue;
         std::string real = resolvedPath(c);
@@ -271,7 +261,7 @@ static std::string getSelfExePath() {
         buf[len] = '\0';
         return std::string(buf);
     }
-    return "kurocat";
+    return "sachicat";
 }
 
 static bool isAutoStartEnabled() {
@@ -291,8 +281,8 @@ static bool setAutoStartEnabled(bool enable) {
     if (!f.is_open()) return false;
     f << "[Desktop Entry]\n"
       << "Type=Application\n"
-      << "Name=KuroCat\n"
-      << "Name[zh_CN]=KuroCat 黑猫桌宠\n"
+      << "Name=SachiCat\n"
+      << "Name[zh_CN]=SachiCat 黑猫桌宠\n"
       << "Comment=Native desktop keyboard & mouse cat pet\n"
       << "Exec=\"" << exe << "\"\n"
       << "Icon=kurocat\n"
@@ -359,284 +349,6 @@ static void applyWindowScaleAndPos(LinuxApp& app, bool anchorBottomCenter) {
     gtk_window_set_keep_above(GTK_WINDOW(app.window), app.settings.alwaysOnTop ? TRUE : FALSE);
     updateInputShape(app);
     app.settings.save();
-}
-
-static void openUrlInBrowser(const std::string& url) {
-    pid_t pid = fork();
-    if (pid == 0) {
-        execlp("xdg-open", "xdg-open", url.c_str(), nullptr);
-        _exit(127);
-    }
-}
-
-struct LinuxUpdateResult {
-    bool ok = false;
-    bool manual = false;
-    bool hasUpdate = false;
-    std::string latestTag;
-    std::string releaseUrl;
-};
-
-static std::string extractJsonField(const std::string& json, const char* fieldName) {
-    std::string key = std::string("\"") + fieldName + "\"";
-    size_t pos = json.find(key);
-    if (pos == std::string::npos) return "";
-    pos = json.find(':', pos + key.size());
-    if (pos == std::string::npos) return "";
-    pos = json.find('"', pos + 1);
-    if (pos == std::string::npos) return "";
-    size_t end = json.find('"', pos + 1);
-    if (end == std::string::npos) return "";
-    return json.substr(pos + 1, end - pos - 1);
-}
-
-static bool isSemVerNewer(const std::string& lhs, const std::string& rhs) {
-    auto parse = [](const std::string& v) {
-        std::vector<int> parts;
-        size_t i = 0;
-        while (i < v.size() && (v[i] == 'v' || v[i] == 'V' || v[i] == ' ')) i++;
-        int cur = 0; bool inNum = false;
-        for (; i < v.size(); ++i) {
-            if (v[i] >= '0' && v[i] <= '9') { cur = cur * 10 + (v[i] - '0'); inNum = true; }
-            else if (v[i] == '.') { parts.push_back(inNum ? cur : 0); cur = 0; inNum = false; }
-            else break;
-        }
-        if (inNum) parts.push_back(cur);
-        return parts;
-    };
-    auto a = parse(lhs), b = parse(rhs);
-    size_t n = std::max(a.size(), b.size());
-    for (size_t i = 0; i < n; ++i) {
-        int va = i < a.size() ? a[i] : 0;
-        int vb = i < b.size() ? b[i] : 0;
-        if (va != vb) return va > vb;
-    }
-    return false;
-}
-
-static std::string extractVersionFromHtml(const std::string& html) {
-    auto parseVerAt = [&](size_t pos) -> std::string {
-        if (pos >= html.size() || (html[pos] != 'v' && html[pos] != 'V')) return "";
-        size_t i = pos + 1;
-        int dots = 0;
-        std::string ver = "v";
-        while (i < html.size()) {
-            char c = html[i];
-            if (c >= '0' && c <= '9') { ver.push_back(c); }
-            else if (c == '.') { dots++; ver.push_back(c); }
-            else break;
-            i++;
-        }
-        return (dots >= 2 && ver.size() > 5) ? ver : "";
-    };
-
-    size_t mPos = html.find("已发布");
-    if (mPos != std::string::npos) {
-        size_t searchStart = (mPos > 32) ? (mPos - 32) : 0;
-        for (size_t i = mPos; i > searchStart; --i) {
-            if (html[i - 1] == 'v' || html[i - 1] == 'V') {
-                std::string v = parseVerAt(i - 1);
-                if (!v.empty()) return v;
-            }
-        }
-    }
-    size_t vPos = html.find("版本 ");
-    if (vPos != std::string::npos) {
-        std::string v = parseVerAt(vPos + 7);
-        if (!v.empty()) return v;
-    }
-    return "";
-}
-
-static std::string fetchUrlBody(const char* url) {
-    std::string cmd = std::string("curl -fsSL --max-time 8 -A KuroCat/") + APP_VERSION + " '" + url +
-        "' 2>/dev/null || wget -qO- --timeout=8 '" + url + "' 2>/dev/null";
-    std::string body;
-    if (FILE* fp = popen(cmd.c_str(), "r")) {
-        char buf[1024];
-        while (size_t n = std::fread(buf, 1, sizeof(buf), fp)) body.append(buf, n);
-        pclose(fp);
-    }
-    return body;
-}
-
-static void startInAppUpdate();
-
-static void startAsyncUpdateCheck(bool manual, int delayMs = 0) {
-    std::thread([manual, delayMs]() {
-        if (delayMs > 0) usleep((useconds_t)delayMs * 1000);
-        auto* res = new LinuxUpdateResult();
-        res->manual = manual;
-
-        std::string body = fetchUrlBody("https://kurocat-download.app.workbuddy.host/version.json?sharecode=JVAABIVZ7L");
-        std::string tag = extractJsonField(body, "tag_name");
-        std::string url = extractJsonField(body, "html_url");
-
-        if (tag.empty()) {
-            std::string html = fetchUrlBody(UPDATE_PAGE_URL);
-            tag = extractVersionFromHtml(html);
-        }
-
-        if (!tag.empty()) {
-            res->ok = true;
-            res->latestTag = tag;
-            res->releaseUrl = url.empty() ? UPDATE_PAGE_URL : url;
-            res->hasUpdate = isSemVerNewer(tag, APP_VERSION);
-        }
-
-        g_idle_add(+[](gpointer data) -> gboolean {
-            auto* r = static_cast<LinuxUpdateResult*>(data);
-            if (g_app && r->ok && r->hasUpdate) {
-                g_app->availableUpdateVersion = r->latestTag;
-                g_app->availableUpdateUrl = r->releaseUrl;
-                GtkWidget* dlg = gtk_message_dialog_new(
-                    nullptr, GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_YES_NO,
-                    "发现 KuroCat 新版本 %s", r->latestTag.c_str());
-                gtk_message_dialog_format_secondary_text(
-                    GTK_MESSAGE_DIALOG(dlg),
-                    "当前版本：v%s\n最新版本：%s\n\n是否立即在软件内自动下载并更新重启？",
-                    APP_VERSION, r->latestTag.c_str());
-                int resp = gtk_dialog_run(GTK_DIALOG(dlg));
-                gtk_widget_destroy(dlg);
-                if (resp == GTK_RESPONSE_YES) {
-                    startInAppUpdate();
-                }
-            } else if (r->manual) {
-                GtkWidget* dlg = gtk_message_dialog_new(
-                    nullptr, GTK_DIALOG_MODAL,
-                    r->ok ? GTK_MESSAGE_INFO : GTK_MESSAGE_WARNING, GTK_BUTTONS_OK,
-                    "%s", r->ok ? "已是最新版本" : "检查更新失败");
-                gtk_message_dialog_format_secondary_text(
-                    GTK_MESSAGE_DIALOG(dlg),
-                    "%s", r->ok ? "当前版本已是最新版本。" : "无法连接到更新服务器，请稍后重试或检查网络连接。");
-                gtk_dialog_run(GTK_DIALOG(dlg));
-                gtk_widget_destroy(dlg);
-            }
-            delete r;
-            return G_SOURCE_REMOVE;
-        }, res);
-    }).detach();
-}
-
-static std::string shQuote(const std::string& s) {
-    std::string out = "'";
-    for (char c : s) {
-        if (c == '\'') out += "'\\''";
-        else out += c;
-    }
-    return out + "'";
-}
-
-/// Writes a per-user launcher (~/.local/share/applications overrides /usr/share/applications for
-/// the same file name) so the app menu starts the per-user copy after a password-free update.
-static void writeUserDesktopEntry(const std::string& exePath) {
-    std::string dir = homeDir() + "/.local/share/applications";
-    g_mkdir_with_parents(dir.c_str(), 0755);
-    std::ofstream f(dir + "/kurocat.desktop");
-    if (!f.is_open()) return;
-    f << "[Desktop Entry]\n"
-      << "Name=KuroCat\n"
-      << "Name[zh_CN]=KuroCat 黑猫键盘桌宠\n"
-      << "Comment=Full-state keyboard & mouse desktop cat pet\n"
-      << "Comment[zh_CN]=打字/游戏全状态监听键盘小黑猫桌宠\n"
-      << "Exec=\"" << exePath << "\"\n"
-      << "Icon=kurocat\n"
-      << "Terminal=false\n"
-      << "Type=Application\n"
-      << "Categories=Utility;Amusement;\n"
-      << "StartupNotify=false\n";
-}
-
-static void startInAppUpdate() {
-    if (!g_app || g_app->isUpdating) return;
-    g_app->isUpdating = true;
-
-    std::thread([]() {
-        bool ok = false;
-        char exeBuf[PATH_MAX] = {};
-        ssize_t exeLen = readlink("/proc/self/exe", exeBuf, sizeof(exeBuf) - 1);
-        std::string exePath = (exeLen > 0) ? std::string(exeBuf, exeLen) : "";
-        const std::string deletedSuffix = " (deleted)"; // binary replaced on disk while running (e.g. .deb upgrade)
-        if (exePath.size() > deletedSuffix.size() &&
-            exePath.compare(exePath.size() - deletedSuffix.size(), deletedSuffix.size(), deletedSuffix) == 0) {
-            exePath.erase(exePath.size() - deletedSuffix.size());
-        }
-        std::string targetPath = exePath;
-
-        std::string workDir = "/tmp/kurocat_upd_" + std::to_string((long)getpid());
-        std::string tarPath = workDir + "/update.tar.gz";
-        std::string newBin = workDir + "/kurocat";
-
-        if (!exePath.empty()) {
-            std::string dlCmd = "mkdir -p " + shQuote(workDir) + " && (curl -fsSL --max-time 60 -o " + shQuote(tarPath) +
-                " " + shQuote(UPDATE_TAR_URL) + " || wget -qO " + shQuote(tarPath) + " --timeout=60 " + shQuote(UPDATE_TAR_URL) +
-                ") && tar -xzf " + shQuote(tarPath) + " -C " + shQuote(workDir);
-            if (std::system(dlCmd.c_str()) == 0) {
-                struct stat st{};
-                if (stat(newBin.c_str(), &st) == 0 && st.st_size > 10000) {
-                    size_t slash = exePath.rfind('/');
-                    std::string exeDir = (slash != std::string::npos) ? exePath.substr(0, slash) : ".";
-                    bool perUser = (access(exeDir.c_str(), W_OK) != 0);
-                    if (perUser) {
-                        // System-wide install (.deb in /usr/bin): previously this asked for the login
-                        // password via pkexec. Install for this user instead — no password needed —
-                        // and redirectToNewestInstalledCopy() makes every launcher pick it up.
-                        targetPath = userLocalBinPath();
-                    }
-                    std::string targetDir = targetPath.substr(0, targetPath.rfind('/'));
-                    std::string tmpTarget = targetPath + ".new";
-                    std::string installCmd = "mkdir -p " + shQuote(targetDir) +
-                        " && cp -f " + shQuote(newBin) + " " + shQuote(tmpTarget) +
-                        " && chmod 755 " + shQuote(tmpTarget) +
-                        " && mv -f " + shQuote(tmpTarget) + " " + shQuote(targetPath);
-                    if (std::system(installCmd.c_str()) == 0) {
-                        ok = true;
-                        if (perUser) {
-                            writeUserDesktopEntry(targetPath);
-                            std::string iconDir = homeDir() + "/.local/share/icons/hicolor/scalable/apps";
-                            std::string iconCmd = "[ -f " + shQuote(workDir + "/kurocat.svg") + " ] && mkdir -p " + shQuote(iconDir) +
-                                " && cp -f " + shQuote(workDir + "/kurocat.svg") + " " + shQuote(iconDir + "/kurocat.svg");
-                            (void)std::system(iconCmd.c_str());
-                        }
-                    }
-                }
-            }
-        }
-        std::string cleanupCmd = "rm -rf " + shQuote(workDir);
-        (void)std::system(cleanupCmd.c_str());
-
-        auto* res = new std::pair<bool, std::string>(ok, targetPath);
-        g_idle_add(+[](gpointer data) -> gboolean {
-            auto* p = static_cast<std::pair<bool, std::string>*>(data);
-            if (g_app) g_app->isUpdating = false;
-            if (p->first && !p->second.empty()) {
-                // Hand the single-instance lock to the new binary before it starts.
-                releaseSingleInstance();
-                pid_t pid = fork();
-                if (pid == 0) {
-                    execl(p->second.c_str(), p->second.c_str(), nullptr);
-                    _exit(127);
-                }
-                gtk_main_quit();
-            } else {
-                GtkWidget* dlg = gtk_message_dialog_new(
-                    nullptr, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_YES_NO,
-                    "自动更新失败");
-                gtk_message_dialog_format_secondary_text(
-                    GTK_MESSAGE_DIALOG(dlg),
-                    "自动下载或替换安装包失败，是否打开下载页手动下载？");
-                int resp = gtk_dialog_run(GTK_DIALOG(dlg));
-                gtk_widget_destroy(dlg);
-                if (resp == GTK_RESPONSE_YES) {
-                    std::string url = (g_app && !g_app->availableUpdateUrl.empty())
-                        ? g_app->availableUpdateUrl : UPDATE_PAGE_URL;
-                    openUrlInBrowser(url);
-                }
-            }
-            delete p;
-            return G_SOURCE_REMOVE;
-        }, res);
-    }).detach();
 }
 
 static GdkPixbuf* createCatTrayPixbuf() {
@@ -847,27 +559,20 @@ static void showPopupMenu(LinuxApp& app, GdkEventButton* evt) {
         g_app->settings.posY = -99999;
         applyWindowScaleAndPos(*g_app, false);
     }));
-    if (!app.availableUpdateVersion.empty()) {
-        std::string lbl = app.isUpdating
-            ? ("⏳ 正在下载更新 " + app.availableUpdateVersion + "...")
-            : ("🆕 发现新版本 " + app.availableUpdateVersion + " (点击自动更新)");
-        if (app.isUpdating) {
-            GtkWidget* item = gtk_menu_item_new_with_label(lbl.c_str());
-            gtk_widget_set_sensitive(item, FALSE);
-            gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
-        } else {
-            addAction(lbl.c_str(), G_CALLBACK(+[](GtkMenuItem*, gpointer) {
-                startInAppUpdate();
-            }));
+    std::string lbl = std::string("检查更新 (SachiCat v") + APP_VERSION + ")";
+    addAction(lbl.c_str(), G_CALLBACK(+[](GtkMenuItem*, gpointer) {
+        GError* error = nullptr;
+        if (!gtk_show_uri_on_window(GTK_WINDOW(g_app->window), RELEASE_PAGE, GDK_CURRENT_TIME, &error)) {
+            GtkWidget* dialog = gtk_message_dialog_new(GTK_WINDOW(g_app->window), GTK_DIALOG_MODAL,
+                GTK_MESSAGE_WARNING, GTK_BUTTONS_CLOSE, "无法打开 GitHub 发布页。");
+            gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog), "%s", error->message);
+            g_error_free(error);
+            gtk_dialog_run(GTK_DIALOG(dialog));
+            gtk_widget_destroy(dialog);
         }
-    } else {
-        std::string lbl = std::string("检查更新 (当前 v") + APP_VERSION + ")";
-        addAction(lbl.c_str(), G_CALLBACK(+[](GtkMenuItem*, gpointer) {
-            startAsyncUpdateCheck(true, 0);
-        }));
-    }
+    }));
     addSep();
-    addAction("退出 KuroCat", G_CALLBACK(+[](GtkMenuItem*, gpointer) {
+    addAction("退出 SachiCat", G_CALLBACK(+[](GtkMenuItem*, gpointer) {
         releaseSingleInstance();
         gtk_main_quit();
     }));
@@ -1095,7 +800,7 @@ static gboolean onWakeSignal(gpointer) {
 
 int main(int argc, char** argv) {
     if (argc > 1 && (std::strcmp(argv[1], "--version") == 0 || std::strcmp(argv[1], "-v") == 0)) {
-        std::printf("KuroCat %s\n", APP_VERSION);
+        std::printf("SachiCat v%s\n", APP_VERSION);
         return 0;
     }
     if (!std::getenv("KUROCAT_NO_REDIRECT")) redirectToNewestInstalledCopy(argv);
@@ -1133,7 +838,7 @@ int main(int argc, char** argv) {
     app.input.start();
 
     app.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(app.window), "KuroCat");
+    gtk_window_set_title(GTK_WINDOW(app.window), "SachiCat");
     gtk_window_set_decorated(GTK_WINDOW(app.window), FALSE);
     gtk_window_set_skip_taskbar_hint(GTK_WINDOW(app.window), TRUE);
     gtk_window_set_skip_pager_hint(GTK_WINDOW(app.window), TRUE);
@@ -1175,7 +880,7 @@ int main(int argc, char** argv) {
     G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     if (GdkPixbuf* pb = createCatTrayPixbuf()) {
         app.trayIcon = gtk_status_icon_new_from_pixbuf(pb);
-        gtk_status_icon_set_tooltip_text(app.trayIcon, "KuroCat 黑猫键盘桌宠 (右键设置)");
+        gtk_status_icon_set_tooltip_text(app.trayIcon, "SachiCat 黑猫键盘桌宠 (右键设置)");
         g_signal_connect(app.trayIcon, "popup-menu", G_CALLBACK(+[](GtkStatusIcon*, guint, guint, gpointer) {
             showPopupMenu(*g_app, nullptr);
         }), nullptr);
@@ -1192,7 +897,6 @@ int main(int argc, char** argv) {
 
     app.lastTickTime = nowSeconds();
     scheduleFrames(desiredFrameIntervalMs(app));
-    startAsyncUpdateCheck(false, 2500);
 
     gtk_main();
     app.input.stop();

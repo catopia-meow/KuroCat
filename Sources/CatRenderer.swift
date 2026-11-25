@@ -62,20 +62,36 @@ enum CatRenderer {
         if showControls, let action = PetAction.allCases.first(where: { controlRect($0).contains(p) }) {
             return .control(action)
         }
-        if bowlAt(p, physics: physics) { return .bowl }
+        if CatSettings.shared.coatTheme == .dopeyCat {
+            if physics.bowlVisible && DopeyArt.dangoAt(p,physics) { return .bowl }
+        } else if bowlAt(p, physics: physics) { return .bowl }
 
         let seatX = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
         let cx = seatX - sin(physics.turn * .pi) * 11
-        let headCenter = headPosition(seatX: seatX, physics: physics)
+        var headCenter = headPosition(seatX: seatX, physics: physics)
+        let lift: CGFloat = CatSettings.shared.coatTheme == .dopeyCat ? physics.jumpLift : 0
+        headCenter.y -= lift
+        let sideSleep = CatSettings.shared.coatTheme == .dopeyCat && physics.sleeping && !physics.feeding
+        var tilt = physics.headTilt.value
+        var headScale = CGSize(width:1,height:1)
+        if sideSleep { (headCenter,tilt,headScale) = DopeyArt.sleepHead(physics) }
+        else if CatSettings.shared.coatTheme == .dopeyCat && physics.feeding { headCenter = CGPoint(x: CatPhysics.seatAnchor.x, y: 128) }
         let dx = p.x - headCenter.x, dy = p.y - headCenter.y
-        let tilt = physics.headTilt.value
-        let local = CGPoint(x: dx * cos(tilt) + dy * sin(tilt), y: dy * cos(tilt) - dx * sin(tilt))
-        if local.y < -17 {
+        let local = CGPoint(x: (dx * cos(tilt) + dy * sin(tilt))/headScale.width,
+                            y: (dy * cos(tilt) - dx * sin(tilt))/headScale.height)
+        if CatSettings.shared.coatTheme == .dopeyCat {
+            let u = 33 - abs(local.x), v = local.y + 18
+            if v < -11 && v > -44 && u > -15 && u < (v+44)*0.86-6 { return .head }
+            if pow(local.x/52, 2) + pow((local.y-6)/44, 2) <= 1 { return .head }
+            if sideSleep && (hypot((p.x-159)/48,(p.y-196)/32) <= 1 ||
+                             hypot((p.x-151)/16,(p.y-161)/15) <= 1 ||
+                             hypot((p.x-241)/19,(p.y-222)/13) <= 1) { return .body }
+        } else if local.y < -17 {
             for left in [true, false] where earPath(left: left, physics: physics).contains(local) {
                 return left ? .leftEar : .rightEar
             }
         }
-        let bx = (p.x - cx) / 26, by = (p.y - (CatPhysics.seatAnchor.y - 22)) / 19
+        let bx = (p.x - cx) / 26, by = (p.y - (CatPhysics.seatAnchor.y - lift - 22)) / 19
         if bx * bx + by * by <= 1 { return .belly }
 
         // Head hit ellipse (generous for cozy petting)
@@ -85,11 +101,17 @@ enum CatRenderer {
             return .head
         }
 
-        if physics.tabletMode && p.y >= 229 {
+        if CatSettings.shared.deskMode == .arcade {
+            let pivot = CatPhysics.arcadePivot, ball = physics.arcadeBall
+            let baseX = (p.x-pivot.x)/18, baseY = (p.y-pivot.y-1.5)/14
+            if baseX*baseX+baseY*baseY <= 1 || hypot(p.x-ball.x,p.y-ball.y) <= 11 ||
+                CGRect(x: 161, y: 236, width: 133, height: 62).contains(p) { return .desk }
+            if p.x >= min(pivot.x,ball.x)-4 && p.x <= max(pivot.x,ball.x)+4 &&
+                p.y >= ball.y && p.y <= pivot.y { return .desk }
+        } else if physics.tabletMode && p.y >= 229 {
             if physics.usingDesk, let slot = physics.tabletKeyIndex(at: p) { return .tabletKey(slot) }
             return .none
-        }
-        if !physics.tabletMode && !physics.sleeping && CGRect(x: 72, y: 236, width: 228, height: 62).contains(p) {
+        } else if !physics.tabletMode && !physics.sleeping && CGRect(x: 72, y: 236, width: 228, height: 62).contains(p) {
             return .desk
         }
 
@@ -113,30 +135,95 @@ enum CatRenderer {
     }
 
     /// Main 60fps draw routine in flipped 360x320 logical coordinate space.
-    static func draw(in ctx: CGContext, physics: CatPhysics, showPermissionPill: Bool) {
+    static func draw(in ctx: CGContext, physics: CatPhysics, showPermissionPill: Bool, dragging: Bool = false) {
         ctx.saveGState()
         ctx.setAllowsAntialiasing(true)
         ctx.setShouldAntialias(true)
 
         let settings = CatSettings.shared
         let coat = settings.coatTheme
+        if coat == .dopeyCat && dragging {
+            DopeyArt.egg(ctx, CatPhysics.seatAnchor.x, 155, physics.eggRoll)
+            ctx.restoreGState()
+            return
+        }
         let breath = sin(physics.time * 2.1) * 1.6
         let baseSeat = CatPhysics.seatAnchor.x + physics.bodyShiftX.value
         let seatX = baseSeat - sin(physics.turn * .pi) * 11
         let seatY = CatPhysics.seatAnchor.y
 
-        if physics.tabletMode {
+        if settings.deskMode != .arcade && physics.tabletMode {
             drawTablet(in: ctx, physics: physics, showLegends: settings.showKeyLegends)
-        } else {
-            drawMouse(in: ctx, physics: physics, theme: settings.keyboardTheme)
-            drawKeyboard(in: ctx, physics: physics, theme: settings.keyboardTheme, eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends)
+        } else if settings.deskMode != .arcade {
+            let theme = settings.activeKeyboardTheme
+            drawMouse(in: ctx, physics: physics, theme: theme)
+            drawKeyboard(in: ctx, physics: physics, theme: theme, eyeTheme: settings.eyeTheme, showLegends: settings.showKeyLegends)
         }
 
-        // 3. Cat Tail (behind body)
+        let headCenter = headPosition(seatX: baseSeat, physics: physics)
+        if coat == .dopeyCat && physics.feeding {
+            if physics.bowlVisible { DopeyArt.eating(ctx, physics) }
+            else { DopeyArt.barrelReaction(ctx, physics) }
+        } else if coat == .dopeyCat && physics.sleeping {
+            DopeyArt.sleeping(ctx, physics)
+            drawSparkles(in: ctx, physics: physics, eyeTheme: settings.eyeTheme, dopeySleep: true)
+        } else if coat == .dopeyCat {
+            DopeyArt.body(ctx, physics, seatX, seatY - physics.jumpLift)
+            ctx.saveGState()
+            ctx.translateBy(x: headCenter.x, y: headCenter.y - physics.jumpLift)
+            ctx.rotate(by: physics.headTilt.value)
+            DopeyArt.head(ctx)
+            if physics.headphones > 0.015 {
+                ctx.scaleBy(x: 1.14, y: 1.10)
+                drawHeadphones(in: ctx, fit: physics.headphones, eye: settings.eyeTheme)
+            }
+            ctx.restoreGState()
+            if settings.deskMode == .arcade && physics.usingDesk {
+                drawArcade(in: ctx, physics: physics, theme: settings.activeKeyboardTheme)
+            }
+            let stylus = physics.tabletMode && physics.usingDesk && !physics.doingDopeyGesture
+            if stylus { drawStylus(in: ctx, physics: physics) }
+            DopeyArt.hands(ctx, physics, stylus)
+        } else {
+            drawStandardCat(in: ctx, physics: physics, coat: coat, eye: settings.eyeTheme,
+                            seatX: seatX, seatY: seatY, headCenter: headCenter, breath: breath)
+        }
+
+        if settings.deskMode == .arcade && !physics.usingDesk {
+            drawArcade(in: ctx, physics: physics, theme: settings.activeKeyboardTheme)
+        }
+        if physics.bowlVisible && coat != .dopeyCat { drawBowl(in: ctx, physics: physics) }
+
+        // 8. Floating Mechanical Keycap Badges (keyboard + mouse clicks)
+        if !physics.floatingKeycaps.isEmpty {
+            drawFloatingKeycaps(in: ctx, physics: physics)
+        }
+
+        // 9. Subtle Petting Sparkles / Sleep Z
+        if coat != .dopeyCat {
+            drawSparkles(in: ctx, physics: physics, eyeTheme: settings.eyeTheme)
+            if physics.facingAway {
+                let phase = physics.backAngerPhase
+                drawAngerMark(in: ctx, head: headCenter, progress: phase)
+                drawAngerMark(in: ctx, head: headCenter, progress: (phase + 0.5).truncatingRemainder(dividingBy: 1), side: -1)
+            } else {
+                drawAngerMark(in: ctx, head: headCenter, progress: physics.angerMarkProgress)
+            }
+
+        }
+        // 10. Optional non-intrusive Permission Pill if global monitoring not yet granted
+        if showPermissionPill {
+            drawPermissionPill(in: ctx)
+        }
+
+        ctx.restoreGState()
+    }
+
+    private static func drawStandardCat(in ctx: CGContext, physics: CatPhysics, coat: CatCoatTheme, eye: EyeColorTheme,
+                                        seatX: CGFloat, seatY: CGFloat, headCenter: CGPoint, breath: CGFloat) {
         drawTail(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
 
         // 4. 3D-Projected Ears (behind crown silhouette so Siamese seal-point ears emerge cleanly from cream skull!)
-        let headCenter = headPosition(seatX: baseSeat, physics: physics)
         drawEarsLayer(in: ctx, center: headCenter, physics: physics, coat: coat)
 
         // 5. Unified C1-Continuous Head + Neck + Pear Torso Silhouette + Siamese 2.5D Face Mask
@@ -154,37 +241,16 @@ enum CatRenderer {
             if physics.hindFootActive.value > 0.03 {
                 drawHindFoot(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
             }
-            drawHeadFeatures(in: ctx, center: headCenter, physics: physics, eyeTheme: settings.eyeTheme, coat: coat)
+            drawHeadFeatures(in: ctx, center: headCenter, physics: physics, eyeTheme: eye, coat: coat)
+            if CatSettings.shared.deskMode == .arcade && physics.usingDesk {
+                drawArcade(in: ctx, physics: physics, theme: CatSettings.shared.activeKeyboardTheme)
+            }
             if physics.tabletMode && physics.usingDesk { drawStylus(in: ctx, physics: physics) }
             drawFrontPaws(in: ctx, seatX: seatX, seatY: seatY, breath: breath, physics: physics, coat: coat)
         } else {
-            if physics.turn < 0.60 { drawHeadFeatures(in: ctx, center: headCenter, physics: physics, eyeTheme: settings.eyeTheme, coat: coat) }
+            if physics.turn < 0.60 { drawHeadFeatures(in: ctx, center: headCenter, physics: physics, eyeTheme: eye, coat: coat) }
             drawTurningPaws(in: ctx, seatX: seatX, seatY: seatY, physics: physics, coat: coat)
         }
-
-        if physics.bowlVisible { drawBowl(in: ctx, physics: physics) }
-
-        // 8. Floating Mechanical Keycap Badges (keyboard + mouse clicks)
-        if !physics.floatingKeycaps.isEmpty {
-            drawFloatingKeycaps(in: ctx, physics: physics)
-        }
-
-        // 9. Subtle Petting Sparkles / Sleep Z
-        drawSparkles(in: ctx, physics: physics, eyeTheme: settings.eyeTheme)
-        if physics.facingAway {
-            let phase = physics.backAngerPhase
-            drawAngerMark(in: ctx, head: headCenter, progress: phase)
-            drawAngerMark(in: ctx, head: headCenter, progress: (phase + 0.5).truncatingRemainder(dividingBy: 1), side: -1)
-        } else {
-            drawAngerMark(in: ctx, head: headCenter, progress: physics.angerMarkProgress)
-        }
-
-        // 10. Optional non-intrusive Permission Pill if global monitoring not yet granted
-        if showPermissionPill {
-            drawPermissionPill(in: ctx)
-        }
-
-        ctx.restoreGState()
     }
 
     static let controlsCanvasHeight: CGFloat = 352
@@ -204,6 +270,7 @@ enum CatRenderer {
             switch mode {
             case .keyboard: return "keyboard"
             case .tablet: return "square.and.pencil"
+            case .arcade: return "gamecontroller"
             case .automatic: return "arrow.triangle.2.circlepath"
             }
         case .keyBubbles: return "character.bubble"
@@ -214,7 +281,8 @@ enum CatRenderer {
 
     static func drawControls(in ctx: CGContext, physics: CatPhysics, mode: DeskMode,
                              doubleClickWake: Bool, keyBubbles: Bool, mouseBubbles: Bool, hover: PetAction?, held: PetAction?) {
-        let group = CGRect(x: 58, y: 318, width: 246, height: 30)
+        let left: CGFloat = 58
+        let group = CGRect(x: left, y: 318, width: 304-left, height: 30)
         fillRounded(in: ctx, group, radius: 9, color: rgb(0x242529, 0.92))
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
@@ -252,6 +320,13 @@ enum CatRenderer {
 
     static func drawPortrait(in ctx: CGContext, coat: CatCoatTheme, eyes: EyeColorTheme) {
         let pose = CatPhysics()
+        if coat == .dopeyCat {
+            ctx.saveGState()
+            ctx.scaleBy(x: 0.82, y: 0.82)
+            DopeyArt.head(ctx)
+            ctx.restoreGState()
+            return
+        }
         drawEarsLayer(in: ctx, center: .zero, physics: pose, coat: coat)
         ctx.saveGState()
         ctx.addEllipse(in: CGRect(x: -45, y: -37, width: 90, height: 80)); ctx.clip()
@@ -294,6 +369,61 @@ enum CatRenderer {
             ctx.fillEllipse(in: CGRect(x: x - 2, y: i % 2 - 2, width: 5, height: 4))
         }
         ctx.restoreGState()
+    }
+
+    private static func drawArcade(in ctx: CGContext, physics: CatPhysics, theme: KeyboardTheme) {
+        let base: NSColor, deck: NSColor, cap: NSColor, border: NSColor, accent: NSColor
+        switch theme {
+        case .classicMilk:
+            (base, deck, cap, border, accent) = (rgb(0x1A1A1F), rgb(0x242429), rgb(0xF7F6F0), rgb(0xC7C4BD), rgb(0xDC527B))
+        case .midnightHacker:
+            (base, deck, cap, border, accent) = (rgb(0x0F0F14), rgb(0x1A1C21), rgb(0x363840), rgb(0x1C1C21), rgb(0xC4F040))
+        case .retroCream:
+            (base, deck, cap, border, accent) = (rgb(0x403D38), rgb(0x615C54), rgb(0xE6E0D1), rgb(0xADA69A), rgb(0xE06B3D))
+        case .dopeyBlue:
+            (base, deck, cap, border, accent) = (rgb(0x343C69), rgb(0x596694), rgb(0xFFF0CC), rgb(0x8792B8), rgb(0x9AADE9))
+        }
+        let plate = blendColor(deck, cap, t: 0.16)
+        func panel(_ rect: CGRect) {
+            fillRounded(in: ctx, rect.offsetBy(dx: 0, dy: 5), radius: 7, color: base)
+            fillRounded(in: ctx, rect, radius: 7, color: plate)
+            ctx.setStrokeColor(blendColor(border, cap, t: 0.36).cgColor)
+            ctx.setLineWidth(1)
+            ctx.addPath(CGPath(roundedRect: rect, cornerWidth: 7, cornerHeight: 7, transform: nil))
+            ctx.strokePath()
+        }
+        func ellipse(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ color: NSColor) {
+            ctx.setFillColor(color.cgColor)
+            ctx.fillEllipse(in: CGRect(x: x, y: y, width: w, height: h))
+        }
+        panel(CGRect(x: 161, y: 236, width: 133, height: 57))
+        let pivot = CatPhysics.arcadePivot, ball = physics.arcadeBall
+        ellipse(pivot.x-18, pivot.y-9, 36, 24, base)
+        ellipse(pivot.x-18, pivot.y-12, 36, 24, plate)
+        ctx.setStrokeColor(blendColor(border, cap, t: 0.35).cgColor)
+        ctx.setLineWidth(1.1)
+        ctx.strokeEllipse(in: CGRect(x: pivot.x-18, y: pivot.y-12, width: 36, height: 24))
+        ctx.saveGState()
+        ctx.setStrokeColor(rgb(0xB8BCC6).cgColor)
+        ctx.setLineWidth(6)
+        ctx.setLineCap(.round)
+        ctx.move(to: pivot)
+        ctx.addLine(to: ball)
+        ctx.strokePath()
+        ctx.restoreGState()
+        ellipse(ball.x-10.4, ball.y-9, 20.8, 20.8, blendColor(accent, base, t: 0.49))
+        ellipse(ball.x-10, ball.y-10.3, 20, 19.8, accent)
+        ellipse(ball.x-6, ball.y-6, 7, 3.5, rgb(0xFFFFFF, 0.45))
+        for i in 0..<8 {
+            let p = CatPhysics.arcadeButtonCenter(i)
+            let press = physics.arcadeButtonPressure[i]
+            let shift = press * 2.5
+            let face = i % 4 < 2 ? accent : blendColor(accent, cap, t: 0.62)
+            ellipse(p.x-11.8, p.y-9.1, 23.6, 18.2, base)
+            ellipse(p.x-10.6, p.y-8.8, 21.2, 16.9, blendColor(face, base, t: 0.38))
+            ellipse(p.x-9.5, p.y-8.9+shift, 19, 13.3, blendColor(face, rgb(0xFFFFFF), t: press*0.32))
+            ellipse(p.x-6, p.y-7+shift, 8, 2, rgb(0xFFFFFF, 0.28))
+        }
     }
 
     private static func drawTablet(in ctx: CGContext, physics: CatPhysics, showLegends: Bool) {
@@ -369,6 +499,10 @@ enum CatRenderer {
         let borderColor: NSColor
         let wheelColor: NSColor
         switch theme {
+        case .dopeyBlue:
+            bodyColor = rgb(0xFFF0CC)
+            borderColor = rgb(0x343C69)
+            wheelColor = rgb(0x9AADE9)
         case .classicMilk:
             bodyColor = NSColor(calibratedRed: 0.955, green: 0.950, blue: 0.925, alpha: 1.0)
             borderColor = NSColor(calibratedRed: 0.14, green: 0.14, blue: 0.16, alpha: 1.0)
@@ -465,6 +599,12 @@ enum CatRenderer {
         let accentColor: NSColor
 
         switch theme {
+        case .dopeyBlue:
+            baseColor = rgb(0x343C69)
+            deckColor = rgb(0x596694)
+            keyColor = rgb(0xFFF0CC)
+            keyBorderColor = rgb(0x8792B8)
+            accentColor = rgb(0x9AADE9)
         case .classicMilk:
             baseColor = NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.12, alpha: 1.0)
             deckColor = NSColor(calibratedRed: 0.14, green: 0.14, blue: 0.16, alpha: 1.0)
@@ -504,7 +644,7 @@ enum CatRenderer {
         // Individual keycaps — tight clean mechanical spacing matching the reference video
         let padU: CGFloat = 0.0028
         let padV: CGFloat = 0.014
-        let glowBaseColor = eyeTheme.glowColor
+        let glowBaseColor = theme == .dopeyBlue ? rgb(0x9A82E4) : eyeTheme.glowColor
 
         for cap in KeyboardLayout.keycaps {
             let glow = physics.keyGlow[cap.key] ?? 0
@@ -523,6 +663,9 @@ enum CatRenderer {
             let kPath = roundedQuadPath(tl: kTL, tr: kTR, br: kBR, bl: kBL, radius: 1.6)
 
             var fill = cap.isAmberAccent ? accentColor : keyColor
+            if theme == .dopeyBlue && !cap.isAmberAccent && cap.widthUnits > 1.0 / 15.0 {
+                fill = rgb(0xD2D9F4)
+            }
             if glow > 0.02 {
                 fill = blendColor(fill, glowBaseColor, t: glow * 0.55)
             }
@@ -1757,20 +1900,37 @@ enum CatRenderer {
 
     // MARK: - Subtle Petting Sparkles & Sleep Z
 
-    private static func drawSparkles(in ctx: CGContext, physics: CatPhysics, eyeTheme: EyeColorTheme) {
+    private static func drawSparkles(in ctx: CGContext, physics: CatPhysics, eyeTheme: EyeColorTheme, dopeySleep: Bool = false) {
         for sp in physics.sparkles {
             let p = sp.age / sp.lifetime
             let alpha = sin(min(1.0, p) * .pi)
             ctx.saveGState()
             ctx.setAlpha(alpha * 0.85)
             if sp.isSleepZ {
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 11 + p * 3, weight: .bold),
-                    .foregroundColor: eyeTheme.primaryColor
-                ]
                 NSGraphicsContext.saveGraphicsState()
                 NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-                NSAttributedString(string: "z", attributes: attrs).draw(at: sp.position)
+                if dopeySleep {
+                    let delay: CGFloat = 0.28
+                    for i in 0..<3 {
+                        let index = CGFloat(i)
+                        let phase = (sp.age-index*delay)/(sp.lifetime-2*delay)
+                        guard phase > 0 && phase < 1 else { continue }
+                        let opacity = CatPhysics.ease(phase/0.16) * CatPhysics.ease((1-phase)/0.43)
+                        ctx.setAlpha(225/255*opacity)
+                        let attrs: [NSAttributedString.Key: Any] = [
+                            .font: NSFont.systemFont(ofSize:10+4*index,weight:.bold),
+                            .foregroundColor: rgb(0x8792CB)
+                        ]
+                        let point = CGPoint(x:sp.position.x+11+12*index,y:sp.position.y-19-9*index)
+                        NSAttributedString(string:"z",attributes:attrs).draw(at:point)
+                    }
+                } else {
+                    let attrs: [NSAttributedString.Key: Any] = [
+                        .font: NSFont.systemFont(ofSize:11+p*3,weight:.bold),
+                        .foregroundColor: eyeTheme.primaryColor
+                    ]
+                    NSAttributedString(string:"z",attributes:attrs).draw(at:sp.position)
+                }
                 NSGraphicsContext.restoreGraphicsState()
             } else {
                 // Tiny glowing chartreuse 4-point star

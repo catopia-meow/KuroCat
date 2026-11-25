@@ -2,14 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${1:-1.1.0}"
+VERSION="$(tr -d '\r\n' < "$ROOT/../VERSION")"
 ARCH="$(dpkg --print-architecture)"
 PKG_DIR="$(mktemp -d)"
 trap 'rm -rf "$PKG_DIR"' EXIT
 
-if [ ! -x "$ROOT/kurocat" ]; then
-    "$ROOT/build.sh"
-fi
+"$ROOT/build.sh"
 
 mkdir -p \
     "$PKG_DIR/DEBIAN" \
@@ -17,8 +15,9 @@ mkdir -p \
     "$PKG_DIR/usr/share/applications" \
     "$PKG_DIR/usr/share/icons/hicolor/scalable/apps"
 
-cp "$ROOT/kurocat" "$PKG_DIR/usr/bin/kurocat"
-chmod 755 "$PKG_DIR/usr/bin/kurocat"
+cp "$ROOT/sachicat" "$PKG_DIR/usr/bin/sachicat"
+chmod 755 "$PKG_DIR/usr/bin/sachicat"
+ln -s sachicat "$PKG_DIR/usr/bin/kurocat"
 cp "$ROOT/kurocat.desktop" "$PKG_DIR/usr/share/applications/kurocat.desktop"
 cp "$ROOT/kurocat.svg" "$PKG_DIR/usr/share/icons/hicolor/scalable/apps/kurocat.svg"
 
@@ -36,8 +35,8 @@ Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_KB}
 Depends: libc6 (>= 2.28), libgtk-3-0 (>= 3.22) | libgtk-3-0t64, libcairo2, libx11-6, libxi6
 Maintainer: chanke17 <chanke17@users.noreply.github.com>
-Homepage: https://github.com/chanke17/KuroCat
-Description: KuroCat native desktop keyboard & mouse cat pet
+Homepage: https://github.com/catopia-meow/SachiCat
+Description: SachiCat native desktop keyboard & mouse cat pet
  Lightweight 60fps transparent desktop pet supporting full-state keyboard and
  mouse capture for typing and gaming (XInput2 + evdev), 2.5D head tracking,
  hunting dilated eyes, petting interactions, and Black/Siamese skins.
@@ -46,8 +45,8 @@ EOF
 
 # mktemp -d creates a 0700 directory; dpkg-deb rejects that under a strict umask.
 chmod -R u=rwX,go=rX "$PKG_DIR"
-chmod 755 "$PKG_DIR/usr/bin/kurocat"
+chmod 755 "$PKG_DIR/usr/bin/sachicat"
 
-OUT_DEB="$ROOT/KuroCat-Linux-${ARCH}.deb"
+OUT_DEB="$ROOT/SachiCat-Linux-${ARCH}.deb"
 dpkg-deb --build --root-owner-group "$PKG_DIR" "$OUT_DEB"
 echo "==> Packaged Debian/UOS installer: $OUT_DEB ($(du -h "$OUT_DEB" | cut -f1))"

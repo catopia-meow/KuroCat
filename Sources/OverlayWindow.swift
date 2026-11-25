@@ -5,7 +5,7 @@ private let captureGreen = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: 1)
 
 final class CatCanvasView: NSView {
     private enum ClickTarget: Equatable {
-        case bowl, restingHead, restingBody, sulkingCat
+        case bowl, restingHead, restingBody, sulkingCat, dopeyCat
     }
 
     private struct Press {
@@ -26,7 +26,8 @@ final class CatCanvasView: NSView {
     private var held: PetAction?
     private var press: Press?
     private var previousClick: ClickTarget?
-    private var isDragging = false
+    private(set) var isDragging = false
+    private var lastDragCursor = CGPoint.zero
     private var isShowingOpenHand = false
 
     override var isFlipped: Bool { true }
@@ -53,8 +54,8 @@ final class CatCanvasView: NSView {
         ctx.scaleBy(x: scaleX, y: scaleY)
 
         let showPill = InputEngine.shared.status == .needsPermission
-        CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: showPill)
-        if settings.showControls {
+        CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: showPill, dragging: isDragging)
+        if settings.showControls && !(settings.coatTheme == .dopeyCat && isDragging) {
             CatRenderer.drawControls(in: ctx, physics: physics, mode: settings.deskMode,
                                      doubleClickWake: settings.doubleClickWake,
                                      keyBubbles: settings.showKeyBadges, mouseBubbles: settings.showMouseBadges,
@@ -128,11 +129,11 @@ final class CatCanvasView: NSView {
         } else {
             physics.overControl = hover != nil
         }
-        physics.setBellyHovered(settings.petInteraction && zone == .belly)
+        physics.setBellyHovered(settings.coatTheme != .dopeyCat && settings.petInteraction && zone == .belly)
         if zone == .desk { physics.stopPetting() }
 
         let ear = zone == .leftEar || zone == .rightEar
-        if zone == .head || zone == .body || ear {
+        if settings.coatTheme != .dopeyCat && (zone == .head || zone == .body || ear) {
             let delta = lastHoverCanvasPt.map { hypot(pt.x - $0.x, pt.y - $0.y) } ?? 0
             let stroke = delta > 1.2 && delta < 80
             if ear && settings.petInteraction && (lastHoverCanvasPt == nil || stroke) {
@@ -207,6 +208,8 @@ final class CatCanvasView: NSView {
         let catBody = zone == .body || zone == .belly
         if !optionHeld && zone == .bowl {
             target = .bowl
+        } else if !optionHeld && settings.coatTheme == .dopeyCat && physics.usingDesk && (catHead || catBody) {
+            target = .dopeyCat
         } else if !optionHeld && physics.facingAway && (catHead || catBody) {
             target = .sulkingCat
         } else if !optionHeld && physics.atRest && catHead {
@@ -217,6 +220,9 @@ final class CatCanvasView: NSView {
             target = nil
         }
         press = Press(screenPoint: screenPt, windowOrigin: win.frame.origin, target: target)
+        lastDragCursor = screenPt
+        physics.eggRoll = 0
+        physics.remainingRoll = 0
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -228,6 +234,12 @@ final class CatCanvasView: NSView {
             guard hypot(dx, dy) >= 4 else { return }
             isDragging = true
             NSCursor.closedHand.set()
+        }
+        if CatSettings.shared.coatTheme == .dopeyCat {
+            let scale = bounds.width / CatPhysics.canvasSize.width
+            physics.rollEgg(dx: (currentScreenPt.x - lastDragCursor.x) / scale,
+                            dy: (lastDragCursor.y - currentScreenPt.y) / scale)
+            lastDragCursor = currentScreenPt
         }
         win.setFrameOrigin(CGPoint(x: press.windowOrigin.x + dx, y: press.windowOrigin.y + dy))
     }
@@ -255,8 +267,11 @@ final class CatCanvasView: NSView {
         let doubleClick = event.clickCount >= 2 && previousClick == press.target
         previousClick = doubleClick ? nil : press.target
         switch press.target {
+        case .dopeyCat? where CatSettings.shared.coatTheme == .dopeyCat:
+            if physics.listening { onAction?(.music) }
+            physics.clickDopeyCat()
         case .bowl? where physics.bowlVisible && !physics.ignoring:
-            if doubleClick { onBowlTaken?() }
+            if doubleClick && CatSettings.shared.coatTheme != .dopeyCat { onBowlTaken?() }
             physics.clickBowl(take: doubleClick)
         case .sulkingCat? where physics.facingAway:
             physics.pokeBack()
@@ -299,7 +314,7 @@ final class OverlayWindow: NSPanel {
             defer: false
         )
 
-        title = "KuroCat"
+        title = "SachiCat"
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false

@@ -15,12 +15,12 @@ b = physics.index('\n    }', a)
 original = subprocess.check_output(['git','-C',str(root),'show','073bc6d97c76a99db72a0eb103a2bd3245fe1ab1:Sources/CatRenderer.swift'], text=True)
 for name, source in [('OriginalRenderer',original),('FixedRenderer',(root/'Sources/CatRenderer.swift').read_text())]:
     source = source.replace('enum CatRenderer {','enum '+name+' {').replace('private static func drawEye3D','static func drawEye3D')
-    if name == 'OriginalRenderer': source = source.replace('CatHitZone','OriginalCatHitZone')
+    if name == 'OriginalRenderer': source = source.replace('CatHitZone','OriginalCatHitZone').replace('case .classicMilk:', 'case .classicMilk, .dopeyBlue:')
     (out/(name+'.swift')).write_text(source)
 PY
 swiftc -module-cache-path "$CHECK_DIR/cache" \
     "$ROOT/Sources/KeyMap.swift" "$ROOT/Sources/InputEngine.swift" \
-    "$ROOT/Sources/CoatPatterns.swift" "$CHECK_DIR/CatPhysics.swift" "$CHECK_DIR/OriginalRenderer.swift" "$CHECK_DIR/FixedRenderer.swift" \
+    "$ROOT/Sources/CoatPatterns.swift" "$ROOT/Sources/DopeyArt.swift" "$CHECK_DIR/CatPhysics.swift" "$CHECK_DIR/OriginalRenderer.swift" "$CHECK_DIR/FixedRenderer.swift" \
     "$ROOT/tests/eye-closure/main.swift" -o "$CHECK_DIR/check" \
     -framework AppKit -framework CoreGraphics -framework QuartzCore -framework IOKit -framework ApplicationServices
 "$CHECK_DIR/check"

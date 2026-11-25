@@ -3,7 +3,6 @@
 #define _UNICODE
 #include <windows.h>
 #include <shellapi.h>
-#include <winhttp.h>
 #include <objidl.h>
 #include <gdiplus.h>
 #include <wtsapi32.h>
@@ -13,21 +12,19 @@
 #include <cmath>
 #include <cwchar>
 #include <algorithm>
-#include <charconv>
 #include "KeyMap.hpp"
 #include "InputEngine.hpp"
 #include "CatPhysics.hpp"
 #include "CatRenderer.hpp"
 #include "DeskMode.hpp"
 #include "AudioBeat.hpp"
-#include "OrcaVersion.h"
+#include <SachiVersion.h>
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "advapi32.lib")
-#pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "wtsapi32.lib")
 
 namespace {
@@ -36,15 +33,10 @@ constexpr const wchar_t* VERSION_PROP = L"KuroCatVersion";
 constexpr const wchar_t* TRAY_OWNER_CLASS = L"KuroCatTrayOwnerClass";
 constexpr const wchar_t* OVERLAY_CLASS = L"KuroCatOverlayWindowClass";
 constexpr double FRAME_INTERVAL = 1.0 / 60.0;
-constexpr int ORCA_RELEASE = KUROCAT_ORCA_RELEASE;
-static_assert(ORCA_RELEASE > 0 && ORCA_RELEASE <= 65535);
-// Keep fork releases above the legacy 1.x property values so old binaries cannot replace them.
-constexpr INT_PTR INSTANCE_VERSION = 0x1000000 + ORCA_RELEASE;
-constexpr char ORCA_TAG_PREFIX[] = "orca-cat-windows-";
-constexpr wchar_t ORCA_RELEASE_PAGE[] = L"https://github.com/catopia-meow/KuroCat/releases/tag/orca-cat-windows-";
+constexpr INT_PTR INSTANCE_VERSION = SACHICAT_INSTANCE_VERSION;
+constexpr wchar_t ORCA_RELEASE_PAGE[] = L"https://github.com/catopia-meow/SachiCat/releases";
 constexpr UINT WM_TRAYICON = WM_APP + 1;
 constexpr UINT WM_WAKE_EXISTING = WM_APP + 2;
-constexpr UINT WM_UPDATE_CHECK_DONE = WM_APP + 3;
 constexpr UINT WM_REQUEST_QUIT = WM_APP + 5; // posted by a newer / elevated instance that is taking over
 constexpr UINT_PTR TIMER_RENDER = 1;
 constexpr int HOTKEY_CLICKTHROUGH_ID = 101;
@@ -92,10 +84,13 @@ enum MenuCmd : UINT {
     CMD_MUSIC,
     CMD_TOGGLE_DOUBLE_CLICK_WAKE,
     CMD_CAPTURE_TRANSPARENT,
-    CMD_CAPTURE_GREEN
+    CMD_CAPTURE_GREEN,
+    CMD_COAT_DOPEY_CAT,
+    CMD_KB_DOPEY,
+    CMD_ARCADE_MODE
 };
 
-enum class ClickTarget { None, RestingHead, RestingBody, SulkingCat, Bowl };
+enum class ClickTarget { None, RestingHead, RestingBody, SulkingCat, Bowl, DopeyCat };
 
 struct AppState {
     HWND hwnd = nullptr;
@@ -116,6 +111,7 @@ struct AppState {
     PetControl hoveredControl = PetControl::None;
     double controlHoverSince = 0.0;
     POINT dragStartCursor = {};
+    POINT lastDragCursor = {};
     POINT dragStartWinOrigin = {};
     ClickTarget previousClick = ClickTarget::None;
     POINT previousClickPoint = {};
@@ -138,7 +134,6 @@ struct AppState {
     double demoStartTime = 0.0;
     int demoStepIdx = 0;
 
-    int openedUpdateRelease = 0;
     int observedMealHour = 0;
     int pendingMeals = 0;
 
@@ -315,70 +310,6 @@ bool isForegroundFullscreen() {
            wr.right >= mi.rcMonitor.right && wr.bottom >= mi.rcMonitor.bottom;
 }
 
-// MARK: - Auto Update Checker (GitHub Releases via WinHTTP)
-
-int readReleaseNumber(const std::string& response) {
-    size_t key = response.find("\"tag_name\"");
-    if (key == std::string::npos) return 0;
-    size_t colon = response.find(':', key + 10);
-    if (colon == std::string::npos) return 0;
-    size_t quote = response.find_first_not_of(" \t\r\n", colon + 1);
-    if (quote == std::string::npos || response[quote] != '"') return 0;
-    size_t firstDigit = quote + sizeof(ORCA_TAG_PREFIX);
-    if (response.compare(quote + 1, sizeof(ORCA_TAG_PREFIX) - 1, ORCA_TAG_PREFIX) != 0 ||
-        firstDigit >= response.size()) return 0;
-    size_t end = response.find('"', firstDigit);
-    if (end == std::string::npos || response[firstDigit] == '0') return 0;
-    int number = 0;
-    auto parsed = std::from_chars(response.data() + firstDigit, response.data() + end, number);
-    return parsed.ec == std::errc{} && parsed.ptr == response.data() + end && number > 0 ? number : 0;
-}
-
-std::string fetchLatestRelease(HINTERNET hConnect) {
-    std::string body;
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", L"/repos/catopia-meow/KuroCat/releases/latest", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-    if (hRequest) {
-        if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-            WinHttpReceiveResponse(hRequest, nullptr)) {
-            DWORD statusCode = 0, statusSize = sizeof(statusCode);
-            WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
-            if (statusCode >= 200 && statusCode < 300) {
-                DWORD avail = 0;
-                while (WinHttpQueryDataAvailable(hRequest, &avail) && avail > 0) {
-                    std::vector<char> buf(avail);
-                    DWORD readBytes = 0;
-                    if (WinHttpReadData(hRequest, buf.data(), avail, &readBytes) && readBytes > 0) {
-                        body.append(buf.data(), readBytes);
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-        WinHttpCloseHandle(hRequest);
-    }
-    return body;
-}
-
-void startAsyncUpdateCheck(HWND notifyHwnd, bool manual, int delayMs = 0) {
-    std::thread([notifyHwnd, manual, delayMs]() {
-        if (delayMs > 0) Sleep((DWORD)delayMs);
-        int release = 0;
-        HINTERNET session = WinHttpOpen(L"KuroCat-OrcaCat", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                       WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (session) {
-            WinHttpSetTimeouts(session, 8000, 8000, 8000, 8000);
-            HINTERNET connection = WinHttpConnect(session, L"api.github.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
-            if (connection) {
-                release = readReleaseNumber(fetchLatestRelease(connection));
-                WinHttpCloseHandle(connection);
-            }
-            WinHttpCloseHandle(session);
-        }
-        PostMessageW(notifyHwnd, WM_UPDATE_CHECK_DONE, manual, release);
-    }).detach();
-}
-
 void setTrayPortrait(AppState& app, DWORD action) {
     using namespace Gdiplus;
     constexpr int size = 64;
@@ -395,7 +326,7 @@ void setTrayPortrait(AppState& app, DWORD action) {
     icon.uID = 1;
     icon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     icon.uCallbackMessage = WM_TRAYICON;
-    wcscpy_s(icon.szTip, L"KuroCat 桌宠（点击打开菜单）");
+    wcscpy_s(icon.szTip, L"SachiCat 桌宠（点击打开菜单）");
     if (portrait.GetHICON(&icon.hIcon) != Ok) return;
     if (Shell_NotifyIconW(action, &icon)) {
         if (app.nid.hIcon) DestroyIcon(app.nid.hIcon);
@@ -533,7 +464,7 @@ void housekeeping(AppState& app) {
             if (fullscreenFg && !app.warnedElevatedForeground) {
                 app.warnedElevatedForeground = true;
                 showTrayBalloon(app,
-                    L"KuroCat 听不到这个游戏的键盘",
+                    L"SachiCat 听不到这个游戏的键盘",
                     L"该游戏以管理员权限运行，Windows 会拦截它的键盘输入。右键小猫/托盘图标 →「以管理员身份重新启动」即可恢复。");
             }
         }
@@ -560,7 +491,7 @@ void setGreenScreenCapture(AppState& app, bool enabled) {
     if (enabled == app.settings.greenScreenCapture) return;
     if (enabled) {
         if (!SetLayeredWindowAttributes(app.hwnd, 0, 255, LWA_ALPHA)) {
-            showTrayBalloon(app, L"KuroCat 直播采集", L"无法启用绿幕窗口。");
+            showTrayBalloon(app, L"SachiCat 直播采集", L"无法启用绿幕窗口。");
             return;
         }
     } else {
@@ -591,12 +522,12 @@ CatHitZone petZoneAt(Pt point, const AppState& app) {
     if (app.physics.resting() && point.y >= 230.0f) return CatHitZone::None;
     if (app.settings.tabletMode && point.y >= 230.0f && point.y <= 296.0f &&
         point.x >= CatPhysics::keypadLeft && point.x <= 325.0f) return CatHitZone::None;
-    return CatRenderer::hitTest(point, app.physics);
+    return CatRenderer::hitTest(point, app.physics, app.settings.coatTheme, app.settings.arcadeMode);
 }
 
 bool pointerOnPet(const AppState& app, Pt point) {
     return app.petPressed || app.heldControl != PetControl::None || controlAt(point, app.settings) != PetControl::None ||
-           CatRenderer::bowlAt(point, app.physics) || petZoneAt(point, app) != CatHitZone::None;
+           CatRenderer::bowlAt(point, app.physics, app.settings.coatTheme) || petZoneAt(point, app) != CatHitZone::None;
 }
 
 bool isDoubleClick(AppState& app, ClickTarget target, POINT point) {
@@ -659,8 +590,10 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_STRING | (app.settings.showKeyBadges ? MF_CHECKED : 0), CMD_TOGGLE_BADGES, L"\u663E\u793A\u6309\u952E\u6C14\u6CE1 ([S] [W] [\u21E7])");
     AppendMenuW(menu, MF_STRING | (app.settings.showMouseBadges ? MF_CHECKED : 0), CMD_TOGGLE_MOUSE_BADGES, L"\u663E\u793A\u9F20\u6807\u70B9\u51FB\u6C14\u6CE1 ([\u5DE6\u952E] [\u53F3\u952E])");
     AppendMenuW(menu, MF_STRING | (app.settings.showKeyLegends ? MF_CHECKED : 0), CMD_TOGGLE_KEY_LEGENDS, L"\u663E\u793A\u952E\u76D8\u5B57\u7B26");
-    AppendMenuW(menu, MF_STRING | (app.settings.footEasterEgg ? MF_CHECKED : 0), CMD_TOGGLE_FOOT, L"高速打字彩蛋（左脚和尾巴）");
-    AppendMenuW(menu, MF_STRING | (app.settings.petInteraction ? MF_CHECKED : 0), CMD_TOGGLE_PET, L"\u6478\u5934/\u6478\u80CC\u95ED\u773C\u4E92\u52A8");
+    if (app.settings.coatTheme != CatCoatTheme::DopeyCat) {
+        AppendMenuW(menu, MF_STRING | (app.settings.footEasterEgg ? MF_CHECKED : 0), CMD_TOGGLE_FOOT, L"高速打字彩蛋（左脚和尾巴）");
+        AppendMenuW(menu, MF_STRING | (app.settings.petInteraction ? MF_CHECKED : 0), CMD_TOGGLE_PET, L"\u6478\u5934/\u6478\u80CC\u95ED\u773C\u4E92\u52A8");
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     // Cat Coat Skin submenu
@@ -670,22 +603,27 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::Shorthair ? MF_CHECKED : 0), CMD_COAT_SHORTHAIR, L"美短（银虎斑加白）");
     AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::OrangeWhite ? MF_CHECKED : 0), CMD_COAT_ORANGE_WHITE, L"橘白猫");
     AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::OrcaCat ? MF_CHECKED : 0), CMD_COAT_ORCA_CAT, L"虎鲸猫");
+    AppendMenuW(coatMenu, MF_STRING | (app.settings.coatTheme == CatCoatTheme::DopeyCat ? MF_CHECKED : 0), CMD_COAT_DOPEY_CAT, L"呆猫");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)coatMenu, L"\u732B\u54AA\u76AE\u80A4");
 
     AppendMenuW(menu, MF_STRING | (app.settings.autoDeskMode ? MF_CHECKED : 0),
                 CMD_AUTO_DESK, L"自动识别绘画窗口和文字输入");
-    AppendMenuW(menu, MF_STRING | (!app.settings.autoDeskMode && !app.settings.tabletMode ? MF_CHECKED : 0),
+    AppendMenuW(menu, MF_STRING | (app.settings.deskMode() == DeskMode::Keyboard ? MF_CHECKED : 0),
                 CMD_KEYBOARD_MODE, L"键鼠模式");
-    AppendMenuW(menu, MF_STRING | (!app.settings.autoDeskMode && app.settings.tabletMode ? MF_CHECKED : 0),
+    AppendMenuW(menu, MF_STRING | (app.settings.deskMode() == DeskMode::Tablet ? MF_CHECKED : 0),
                 CMD_TABLET_MODE, L"数位板模式");
+    AppendMenuW(menu, MF_STRING | (app.settings.arcadeMode ? MF_CHECKED : 0),
+                CMD_ARCADE_MODE, L"街机摇杆模式");
     if (app.settings.tabletMode)
         AppendMenuW(menu, MF_STRING, CMD_CLEAR_TABLET, L"清空画板");
 
     // Keyboard Theme submenu
     HMENU kbMenu = CreatePopupMenu();
-    AppendMenuW(kbMenu, MF_STRING | (app.settings.keyboardTheme == KeyboardTheme::ClassicMilk ? MF_CHECKED : 0), CMD_KB_MILK, L"\u7ECF\u5178\u5976\u767D\u6696\u9EC4 (\u539F\u7248)");
-    AppendMenuW(kbMenu, MF_STRING | (app.settings.keyboardTheme == KeyboardTheme::MidnightHacker ? MF_CHECKED : 0), CMD_KB_HACKER, L"\u6697\u591C\u6781\u5BA2\u9ED1");
-    AppendMenuW(kbMenu, MF_STRING | (app.settings.keyboardTheme == KeyboardTheme::RetroCream ? MF_CHECKED : 0), CMD_KB_RETRO, L"\u590D\u53E4\u5976\u6CB9\u7070");
+    const auto keyboard = app.settings.activeKeyboardTheme();
+    AppendMenuW(kbMenu, MF_STRING | (keyboard == KeyboardTheme::ClassicMilk ? MF_CHECKED : 0), CMD_KB_MILK, L"\u7ECF\u5178\u5976\u767D\u6696\u9EC4 (\u539F\u7248)");
+    AppendMenuW(kbMenu, MF_STRING | (keyboard == KeyboardTheme::MidnightHacker ? MF_CHECKED : 0), CMD_KB_HACKER, L"\u6697\u591C\u6781\u5BA2\u9ED1");
+    AppendMenuW(kbMenu, MF_STRING | (keyboard == KeyboardTheme::RetroCream ? MF_CHECKED : 0), CMD_KB_RETRO, L"\u590D\u53E4\u5976\u6CB9\u7070");
+    AppendMenuW(kbMenu, MF_STRING | (keyboard == KeyboardTheme::DopeyBlue ? MF_CHECKED : 0), CMD_KB_DOPEY, L"呆猫蓝紫");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)kbMenu, L"\u952E\u76D8\u914D\u8272");
 
     // Eye Color submenu
@@ -711,10 +649,10 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | actionFlags, CMD_DEMO_BURST, L"\u6F14\u793A\u6253\u5B57\u52A8\u753B");
     AppendMenuW(menu, MF_STRING, CMD_RESET_POS, L"\u91CD\u7F6E\u4F4D\u7F6E\u5230\u53F3\u4E0B\u89D2");
-    std::wstring checkLabel = L"检查更新（虎鲸猫 " + std::to_wstring(ORCA_RELEASE) + L"）";
+    std::wstring checkLabel = L"检查更新（SachiCat " SACHICAT_VERSION_W L"）";
     AppendMenuW(menu, MF_STRING, CMD_CHECK_UPDATE, checkLabel.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, CMD_QUIT, L"\u9000\u51FA KuroCat");
+    AppendMenuW(menu, MF_STRING, CMD_QUIT, L"\u9000\u51FA SachiCat");
 
     HWND menuOwner = app.menuOwnerHwnd ? app.menuOwnerHwnd : app.hwnd;
     SetForegroundWindow(menuOwner);
@@ -771,6 +709,7 @@ void runCommand(AppState& app, UINT cmd) {
         case CMD_AUTO_DESK:
         case CMD_KEYBOARD_MODE:
         case CMD_TABLET_MODE:
+        case CMD_ARCADE_MODE:
             if (app.physics.listening()) stopListening(app);
             break;
         default:
@@ -789,7 +728,7 @@ void runCommand(AppState& app, UINT cmd) {
                     ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
                 }
             } else {
-                showTrayBalloon(app, L"KuroCat 听音乐", L"无法启动系统声音监听。");
+                showTrayBalloon(app, L"SachiCat 听音乐", L"无法启动系统声音监听。");
             }
             break;
         case CMD_TOGGLE_SLEEP:
@@ -828,8 +767,8 @@ void runCommand(AppState& app, UINT cmd) {
             app.settings.saveToRegistry();
             if (app.settings.fullClickThrough) {
                 showTrayBalloon(app,
-                    L"KuroCat \u5DF2\u5F00\u542F\u5B8C\u5168\u9F20\u6807\u7A7F\u900F",
-                    L"\u53D6\u6D88\u65B9\u5F0F\uFF1A\u6309 Ctrl+Alt+Shift+P\uFF0C\u6216\u6309\u4F4F Alt \u952E\u53F3\u952E\u5C0F\u732B\uFF0C\u6216\u70B9\u53F3\u4E0B\u89D2\u6258\u76D8\u5C0F\u732B\u56FE\u6807\uFF0C\u6216\u518D\u6B21\u53CC\u51FB KuroCat.exe");
+                    L"SachiCat \u5DF2\u5F00\u542F\u5B8C\u5168\u9F20\u6807\u7A7F\u900F",
+                    L"\u53D6\u6D88\u65B9\u5F0F\uFF1A\u6309 Ctrl+Alt+Shift+P\uFF0C\u6216\u6309\u4F4F Alt \u952E\u53F3\u952E\u5C0F\u732B\uFF0C\u6216\u70B9\u53F3\u4E0B\u89D2\u6258\u76D8\u5C0F\u732B\u56FE\u6807\uFF0C\u6216\u518D\u6B21\u53CC\u51FB SachiCat.exe");
             }
             break;
         case CMD_TOGGLE_TOPMOST:
@@ -850,8 +789,11 @@ void runCommand(AppState& app, UINT cmd) {
         case CMD_AUTO_DESK:
         case CMD_KEYBOARD_MODE:
         case CMD_TABLET_MODE:
+        case CMD_ARCADE_MODE:
             app.settings.autoDeskMode = cmd == CMD_AUTO_DESK;
+            app.settings.arcadeMode = cmd == CMD_ARCADE_MODE;
             if (!app.settings.autoDeskMode) app.settings.tabletMode = cmd == CMD_TABLET_MODE;
+            if (app.settings.arcadeMode && app.physics.resting()) app.physics.wakeUp();
             app.deskMonitor->result = -1;
             app.deskMonitor->enabled = app.settings.autoDeskMode;
             app.physics.penDown = false;
@@ -891,6 +833,13 @@ void runCommand(AppState& app, UINT cmd) {
             app.settings.eyeTheme = EyeColorTheme::SoftAmber;
             app.settings.saveToRegistry();
             break;
+        case CMD_COAT_DOPEY_CAT:
+            if (app.physics.listening()) stopListening(app);
+            app.physics.enterDopeySkin();
+            app.pendingMeals = 0;
+            app.settings.coatTheme = CatCoatTheme::DopeyCat;
+            app.settings.saveToRegistry();
+            break;
         case CMD_COAT_ORCA_CAT:
             app.settings.coatTheme = CatCoatTheme::OrcaCat;
             app.settings.eyeTheme = EyeColorTheme::ReferenceHazel;
@@ -898,9 +847,10 @@ void runCommand(AppState& app, UINT cmd) {
             break;
         case CMD_EYE_SOFT_AMBER: app.settings.eyeTheme = EyeColorTheme::SoftAmber; app.settings.saveToRegistry(); break;
         case CMD_EYE_REFERENCE_HAZEL: app.settings.eyeTheme = EyeColorTheme::ReferenceHazel; app.settings.saveToRegistry(); break;
-        case CMD_KB_MILK:   app.settings.keyboardTheme = KeyboardTheme::ClassicMilk; app.settings.saveToRegistry(); break;
-        case CMD_KB_HACKER: app.settings.keyboardTheme = KeyboardTheme::MidnightHacker; app.settings.saveToRegistry(); break;
-        case CMD_KB_RETRO:  app.settings.keyboardTheme = KeyboardTheme::RetroCream; app.settings.saveToRegistry(); break;
+        case CMD_KB_MILK:   app.settings.setActiveKeyboardTheme(KeyboardTheme::ClassicMilk); app.settings.saveToRegistry(); break;
+        case CMD_KB_HACKER: app.settings.setActiveKeyboardTheme(KeyboardTheme::MidnightHacker); app.settings.saveToRegistry(); break;
+        case CMD_KB_RETRO:  app.settings.setActiveKeyboardTheme(KeyboardTheme::RetroCream); app.settings.saveToRegistry(); break;
+        case CMD_KB_DOPEY:  app.settings.setActiveKeyboardTheme(KeyboardTheme::DopeyBlue); app.settings.saveToRegistry(); break;
         case CMD_EYE_LIME:  app.settings.eyeTheme = EyeColorTheme::NeonChartreuse; app.settings.saveToRegistry(); break;
         case CMD_EYE_BLUE:  app.settings.eyeTheme = EyeColorTheme::SiameseBlue; app.settings.saveToRegistry(); break;
         case CMD_EYE_AMBER: app.settings.eyeTheme = EyeColorTheme::WarmAmber; app.settings.saveToRegistry(); break;
@@ -921,7 +871,8 @@ void runCommand(AppState& app, UINT cmd) {
             applyWindowScaleAndPosition(app, false);
             break;
         case CMD_CHECK_UPDATE:
-            if (app.menuOwnerHwnd) startAsyncUpdateCheck(app.menuOwnerHwnd, true, 0);
+            if (reinterpret_cast<INT_PTR>(ShellExecuteW(app.hwnd, L"open", ORCA_RELEASE_PAGE, nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
+                MessageBoxW(app.hwnd, L"无法打开 GitHub 发布页。", L"SachiCat 检查更新", MB_OK | MB_ICONWARNING);
             break;
         case CMD_RELAUNCH_ADMIN:
             // The elevated copy starts with --takeover and waits for this one to exit.
@@ -956,7 +907,8 @@ void runControl(AppState& app, PetControl button) {
         case PetControl::Mode:
             switch (app.settings.deskMode()) {
                 case DeskMode::Keyboard: runCommand(app, CMD_TABLET_MODE); break;
-                case DeskMode::Tablet: runCommand(app, CMD_AUTO_DESK); break;
+                case DeskMode::Tablet: runCommand(app, CMD_ARCADE_MODE); break;
+                case DeskMode::Arcade: runCommand(app, CMD_AUTO_DESK); break;
                 case DeskMode::Auto: runCommand(app, CMD_KEYBOARD_MODE); break;
             }
             break;
@@ -1021,7 +973,7 @@ void tickAndRender(AppState& app) {
 
     bool overControl = hover != PetControl::None || app.heldControl != PetControl::None;
     if (mealReady(app.pendingMeals, app.input, now)) startMeal(app);
-    if (app.physics.breakDue(dt, app.input, now, overControl)) {
+    if (!app.settings.arcadeMode && app.physics.breakDue(dt, app.input, now, overControl)) {
         SYSTEMTIME local{};
         GetLocalTime(&local);
         static std::mt19937 random{std::random_device{}()};
@@ -1039,10 +991,11 @@ void tickAndRender(AppState& app) {
     }
     if (app.audioBeat.failed()) {
         stopListening(app);
-        showTrayBalloon(app, L"KuroCat 听音乐", L"无法读取当前的系统音频输出。");
+        showTrayBalloon(app, L"SachiCat 听音乐", L"无法读取当前的系统音频输出。");
     }
     app.physics.step(dt, wr, app.input, app.settings, overControl,
                      app.audioBeat.pulse(), app.audioBeat.audible());
+    if (app.isDragging && app.settings.coatTheme == CatCoatTheme::DopeyCat) app.physics.coastEgg(dt);
     if (!physicsLooksSane(app.physics)) {
         // A single non-finite value would otherwise make every later frame draw nothing (the cat
         // "vanishes" until restart). Rebuild the pose but keep the session statistics.
@@ -1058,13 +1011,13 @@ void tickAndRender(AppState& app) {
     if (!cursorCaptured) {
         if (PtInRect(&wr, cursor)) {
             CatHitZone zone = petZoneAt(cp, app);
-            bool overBowl = CatRenderer::bowlAt(cp, app.physics);
-            bellyHovered = app.settings.petInteraction && zone == CatHitZone::Belly;
+            bool overBowl = CatRenderer::bowlAt(cp, app.physics, app.settings.coatTheme);
+            bellyHovered = app.settings.coatTheme != CatCoatTheme::DopeyCat && app.settings.petInteraction && zone == CatHitZone::Belly;
             if (zone == CatHitZone::Desk) app.physics.stopPetting();
             if (zone != CatHitZone::None) {
                 float d = app.hasLastHover ? std::hypot(cp.x - app.lastHoverCanvas.x, cp.y - app.lastHoverCanvas.y) : 0.0f;
                 bool stroke = d > 1.2f && d < 80.0f;
-                if (app.settings.petInteraction && (!app.hasLastHover || stroke)) {
+                if (app.settings.coatTheme != CatCoatTheme::DopeyCat && app.settings.petInteraction && (!app.hasLastHover || stroke)) {
                     if (zone == CatHitZone::LeftEar || zone == CatHitZone::RightEar)
                         app.physics.touchEar(zone == CatHitZone::LeftEar);
                     else if (stroke && (zone == CatHitZone::Head || zone == CatHitZone::Body))
@@ -1102,8 +1055,8 @@ void tickAndRender(AppState& app) {
         Gdiplus::Graphics g(&bmp);
         g.Clear(app.settings.greenScreenCapture ? Gdiplus::Color(255, 0, 255, 0) : Gdiplus::Color(0, 0, 0, 0));
         g.ScaleTransform((float)w / CatPhysics::CanvasWidth, (float)h / CatRenderer::canvasHeight(app.settings));
-        CatRenderer::draw(g, app.physics, app.settings);
-        if (app.settings.showControls) {
+        CatRenderer::draw(g, app.physics, app.settings, app.isDragging);
+        if (app.settings.showControls && !(app.isDragging && app.settings.coatTheme == CatCoatTheme::DopeyCat)) {
             CatRenderer::drawControls(g, app.physics, app.settings, hover, app.heldControl, now - app.controlHoverSince > 0.46);
         }
     }
@@ -1225,7 +1178,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     SetCapture(hwnd);
                     return 0;
                 }
-                const bool overBowl = CatRenderer::bowlAt(point, app->physics);
+                const bool overBowl = CatRenderer::bowlAt(point, app->physics, app->settings.coatTheme);
                 if (!overBowl && app->settings.tabletMode && app->physics.usingDesk() && !altHeld) {
                     int slot = CatPhysics::tabletKeyAt(point);
                     if (slot >= 0) {
@@ -1234,11 +1187,13 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         return 0;
                     }
                 }
-                CatHitZone zone = CatRenderer::hitTest(point, app->physics);
+                CatHitZone zone = CatRenderer::hitTest(point, app->physics, app->settings.coatTheme, app->settings.arcadeMode);
                 if (zone == CatHitZone::None && !overBowl) return 0;
                 app->pressedTarget = ClickTarget::None;
                 if (!altHeld && overBowl) {
                     app->pressedTarget = ClickTarget::Bowl;
+                } else if (!altHeld && app->settings.coatTheme == CatCoatTheme::DopeyCat && app->physics.usingDesk() && zone != CatHitZone::Desk) {
+                    app->pressedTarget = ClickTarget::DopeyCat;
                 } else if (!altHeld && app->physics.facingAway() && zone != CatHitZone::Desk) {
                     app->pressedTarget = ClickTarget::SulkingCat;
                 } else if (!altHeld && app->physics.atRest()) {
@@ -1251,6 +1206,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 app->petPressed = true;
                 app->dragStartCursor = local;
                 ClientToScreen(hwnd, &app->dragStartCursor);
+                app->lastDragCursor = app->dragStartCursor;
+                app->physics.eggRoll = 0;
+                app->physics.remainingRoll = 0;
                 RECT wr = {};
                 GetWindowRect(hwnd, &wr);
                 app->dragStartWinOrigin = { wr.left, wr.top };
@@ -1268,6 +1226,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (!app->isDragging && std::abs(dx) < GetSystemMetrics(SM_CXDRAG) &&
                     std::abs(dy) < GetSystemMetrics(SM_CYDRAG)) return 0;
                 app->isDragging = true;
+                if (app->settings.coatTheme == CatCoatTheme::DopeyCat) {
+                    const float scale = app->settings.scale;
+                    app->physics.rollEgg((cur.x - app->lastDragCursor.x) / scale,
+                                         (cur.y - app->lastDragCursor.y) / scale);
+                    app->lastDragCursor = cur;
+                }
                 int nx = app->dragStartWinOrigin.x + dx;
                 int ny = app->dragStartWinOrigin.y + dy;
                 SetWindowPos(hwnd, nullptr, nx, ny, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -1299,13 +1263,20 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     app->settings.posY = wr.top;
                     app->settings.saveToRegistry();
                 } else if (target == ClickTarget::Bowl && app->physics.bowlVisible() && !app->physics.ignoring()) {
-                    if (isDoubleClick(*app, target, local)) {
+                    const bool take = isDoubleClick(*app, target, local);
+                    if (app->settings.coatTheme == CatCoatTheme::DopeyCat) {
+                        app->physics.disturbDango(take);
+                    } else if (take) {
                         if (app->physics.listening()) stopListening(*app);
                         app->physics.takeBowl();
                         app->demoActive = false;
                     } else {
                         app->physics.disturbBowl();
                     }
+                } else if (target == ClickTarget::DopeyCat && app->settings.coatTheme == CatCoatTheme::DopeyCat) {
+                    app->previousClick = ClickTarget::None;
+                    if (app->physics.listening()) stopListening(*app);
+                    app->physics.clickDopeyCat();
                 } else if (target == ClickTarget::SulkingCat && app->physics.facingAway()) {
                     app->previousClick = ClickTarget::None;
                     app->physics.pokeBack();
@@ -1356,11 +1327,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 app->settings.saveToRegistry();
                 if (app->settings.fullClickThrough) {
                     showTrayBalloon(*app,
-                        L"KuroCat \u5DF2\u5F00\u542F\u5B8C\u5168\u9F20\u6807\u7A7F\u900F",
+                        L"SachiCat \u5DF2\u5F00\u542F\u5B8C\u5168\u9F20\u6807\u7A7F\u900F",
                         L"\u518D\u6B21\u6309 Ctrl+Alt+Shift+P \u6216\u6309\u4F4F Alt \u53F3\u952E\u5C0F\u732B\u5373\u53EF\u53D6\u6D88");
                 } else {
                     showTrayBalloon(*app,
-                        L"KuroCat \u5DF2\u53D6\u6D88\u5B8C\u5168\u9F20\u6807\u7A7F\u900F",
+                        L"SachiCat \u5DF2\u53D6\u6D88\u5B8C\u5168\u9F20\u6807\u7A7F\u900F",
                         L"\u73B0\u5728\u53EF\u4EE5\u6B63\u5E38\u62D6\u52A8\u3001\u6478\u5934\u548C\u53F3\u952E\u6253\u5F00\u83DC\u5355\u4E86");
                 }
             }
@@ -1368,7 +1339,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_WAKE_EXISTING:
             if (app) {
-                // Re-launching KuroCat.exe unlocks click-through, restores visibility & opens settings menu!
+                // Re-launching SachiCat.exe unlocks click-through, restores visibility & opens settings menu!
                 if (app->settings.fullClickThrough) {
                     app->settings.fullClickThrough = false;
                     app->settings.saveToRegistry();
@@ -1382,27 +1353,6 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 showContextMenu(*app, pt);
             }
             return 0;
-
-        case WM_UPDATE_CHECK_DONE: {
-            if (!app) return 0;
-            int release = (int)lParam;
-            bool manual = wParam != 0;
-            if (release > ORCA_RELEASE) {
-                if (manual || release > app->openedUpdateRelease) {
-                    std::wstring page = ORCA_RELEASE_PAGE + std::to_wstring(release);
-                    INT_PTR opened = (INT_PTR)ShellExecuteW(nullptr, L"open", page.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                    if (opened > 32) app->openedUpdateRelease = release;
-                    else if (manual) MessageBoxW(nullptr, L"无法打开 GitHub 发布页。", L"KuroCat 检查更新", MB_OK | MB_ICONWARNING);
-                }
-            } else if (manual) {
-                const wchar_t* message = release > 0
-                    ? L"GitHub 上暂无比本机更新的虎鲸猫版本。"
-                    : L"无法从 GitHub 读取虎鲸猫的发布版本。";
-                MessageBoxW(nullptr, message, L"KuroCat 检查更新",
-                            MB_OK | (release > 0 ? MB_ICONINFORMATION : MB_ICONWARNING));
-            }
-            return 0;
-        }
 
         case WM_DESTROY:
             if (hwnd == (app ? app->hwnd : nullptr)) {
@@ -1532,7 +1482,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     ULONG_PTR gdipToken = 0;
     Gdiplus::GdiplusStartup(&gdipToken, &gdipInput, nullptr);
 
-    // Refresh auto-start exe path if user enabled auto-start and moved KuroCat.exe
+    // Refresh auto-start exe path if user enabled auto-start and moved SachiCat.exe
     if (isAutoStartEnabled()) {
         setAutoStartEnabled(true);
     }
@@ -1611,7 +1561,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     app.hwnd = CreateWindowExW(
         exStyle,
         wc.lpszClassName,
-        L"KuroCat",
+        L"SachiCat",
         WS_POPUP,
         initX, initY, initW, initH,
         nullptr, nullptr, hInst, nullptr
@@ -1640,7 +1590,6 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     // Global shortcut Ctrl+Alt+Shift+P to toggle full click-through anytime!
     if (app.menuOwnerHwnd) {
         RegisterHotKey(app.menuOwnerHwnd, HOTKEY_CLICKTHROUGH_ID, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 'P');
-        startAsyncUpdateCheck(app.menuOwnerHwnd, false, 2500);
     }
 
     ShowWindow(app.hwnd, SW_SHOWNOACTIVATE);
@@ -1679,6 +1628,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     }
 
     app.deskMonitor->stop = true;
+    DopeyArt::release();
     g_app = nullptr;
     Gdiplus::GdiplusShutdown(gdipToken);
     ReleaseMutex(hMutex);

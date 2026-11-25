@@ -8,6 +8,7 @@ enum KeyboardTheme: String, CaseIterable {
     case classicMilk = "经典奶白暖黄 (原版)"
     case midnightHacker = "暗夜极客黑"
     case retroCream = "复古奶油灰"
+    case dopeyBlue = "呆猫蓝紫"
 }
 
 enum CatCoatTheme: String, CaseIterable {
@@ -16,6 +17,7 @@ enum CatCoatTheme: String, CaseIterable {
     case shorthair = "美短（银虎斑加白）"
     case orangeWhite = "橘白猫"
     case orcaCat = "虎鲸猫"
+    case dopeyCat = "呆猫"
 }
 
 enum EyeColorTheme: String, CaseIterable {
@@ -54,12 +56,13 @@ enum EyeColorTheme: String, CaseIterable {
 }
 
 enum DeskMode: Int, CaseIterable {
-    case keyboard, tablet, automatic
-    var title: String { ["键鼠", "数位板", "自动识别"][rawValue] }
+    case keyboard, tablet, automatic, arcade
+    var title: String { ["键鼠", "数位板", "自动识别", "街机摇杆"][rawValue] }
     var next: Self {
         switch self {
         case .keyboard: return .tablet
-        case .tablet: return .automatic
+        case .tablet: return .arcade
+        case .arcade: return .automatic
         case .automatic: return .keyboard
         }
     }
@@ -67,6 +70,7 @@ enum DeskMode: Int, CaseIterable {
 
 enum PetAction: Int, CaseIterable {
     case treat, sleep, wake, doubleClickWake, music, mode, keyBubbles, mouseBubbles, hide
+
     var title: String {
         ["喂零食", "白天不熬猫", "晚上猫熬人", "双击猫头唤醒", "听音乐", "切换模式", "按键气泡", "鼠标气泡", "隐藏控件"][rawValue]
     }
@@ -117,6 +121,16 @@ final class CatSettings {
     var keyboardTheme: KeyboardTheme {
         didSet { UserDefaults.standard.set(keyboardTheme.rawValue, forKey: "KuroCat.KeyboardTheme") }
     }
+    private var dopeyKeyboardTheme: KeyboardTheme {
+        didSet { UserDefaults.standard.set(dopeyKeyboardTheme.rawValue, forKey: "KuroCat.DopeyKeyboardTheme") }
+    }
+    var activeKeyboardTheme: KeyboardTheme {
+        get { coatTheme == .dopeyCat ? dopeyKeyboardTheme : keyboardTheme }
+        set {
+            if coatTheme == .dopeyCat { dopeyKeyboardTheme = newValue }
+            else { keyboardTheme = newValue }
+        }
+    }
     var eyeTheme: EyeColorTheme {
         didSet { UserDefaults.standard.set(eyeTheme.rawValue, forKey: "KuroCat.EyeTheme") }
     }
@@ -138,6 +152,7 @@ final class CatSettings {
         scale = savedScale > 0.3 ? CGFloat(savedScale) : 1.0
         coatTheme = CatCoatTheme(rawValue: d.string(forKey: "KuroCat.CoatTheme") ?? "") ?? .orcaCat
         keyboardTheme = KeyboardTheme(rawValue: d.string(forKey: "KuroCat.KeyboardTheme") ?? "") ?? .classicMilk
+        dopeyKeyboardTheme = d.string(forKey: "KuroCat.DopeyKeyboardTheme").flatMap(KeyboardTheme.init(rawValue:)) ?? .dopeyBlue
         let savedEye = d.string(forKey: "KuroCat.EyeTheme") ?? ""
         eyeTheme = savedEye.isEmpty ? .referenceHazel : EyeColorTheme.saved(savedEye)
     }
@@ -240,6 +255,26 @@ final class CatPhysics {
     var bodyTilt = Spring1D(0)       // radians
     var bodySquash = Spring1D(1.0)
     var headTilt = Spring1D(0)       // radians (roll)
+    var punchReach = Spring1D(0)    // Negative brings the viewer's left fist forward.
+    private(set) var jumpLift: CGFloat = 0
+    static let eggRadius: CGFloat = 59
+    var eggRoll: CGFloat = 0
+    var remainingRoll: CGFloat = 0
+
+    func rollEgg(dx: CGFloat, dy: CGFloat) {
+        let direction = abs(dx) >= abs(dy) ? dx : dy
+        let distance = hypot(dx, dy)
+        let arc = (direction < 0 ? -distance : distance) / Self.eggRadius
+        if arc * remainingRoll < 0 { remainingRoll = 0 }
+        remainingRoll = min(0.85, max(-0.85, remainingRoll + arc * 0.55))
+        eggRoll = (eggRoll + arc * 0.45).remainder(dividingBy: 2 * .pi)
+    }
+
+    func coastEgg(dt: CGFloat) {
+        let next = remainingRoll * exp(-dt * 7.5)
+        eggRoll = (eggRoll + remainingRoll - next).remainder(dividingBy: 2 * .pi)
+        remainingRoll = next
+    }
     var headYaw = Spring1D(0)        // -1 (turn left) ... +1 (turn right)
     var headPitch = Spring1D(0)      // -1 (look up)   ... +1 (look down)
     var headOffsetY = Spring1D(0)
@@ -252,6 +287,70 @@ final class CatPhysics {
     var mouseOffset = Spring2D(.zero)
     var mousePressLeft = Spring1D(0)
     var mousePressRight = Spring1D(0)
+    static let arcadePivot = CGPoint(x: 110, y: 266)
+    static func arcadeButtonCenter(_ index: Int) -> CGPoint {
+        let column = index % 4
+        return CGPoint(x: 181 + 30.5 * CGFloat(column),
+                       y: (index < 4 ? 250 : 276) + (column == 0 ? 4 : (column == 3 ? 3 : 0)))
+    }
+    private(set) var arcadeStick = Spring2D(.zero)
+    private(set) var arcadeButton = -1
+    private(set) var arcadePressure: CGFloat = 0
+    private(set) var arcadeButtonPressure = Array(repeating: CGFloat(0), count: 8)
+    private var arcadeKeyButtons: [PhysicalKey: Int] = [:]
+    private var arcadeTapUntil = Array(repeating: CGFloat(0), count: 8)
+    private var arcadeNextButton = 0
+    private var arcadeLastButton = 1
+    var arcadeBall: CGPoint {
+        CGPoint(x: Self.arcadePivot.x + arcadeStick.point.x, y: Self.arcadePivot.y - 23 + arcadeStick.point.y)
+    }
+
+    private func updateArcade(dt: CGFloat, playing: Bool, keys: Set<PhysicalKey>, mouseVelocity: CGVector) {
+        if !playing {
+            arcadeStick.target = .zero
+            arcadeButton = -1
+            arcadePressure = 0
+            arcadeKeyButtons.removeAll()
+            arcadeNextButton = 0
+            for i in arcadeTapUntil.indices {
+                arcadeTapUntil[i] = 0
+                arcadeButtonPressure[i] = 0
+            }
+            arcadeStick.step(dt: dt, stiffness: 200, damping: 20)
+            return
+        }
+
+        let speed = hypot(mouseVelocity.dx, mouseVelocity.dy)
+        let gain: CGFloat = overControl || speed < 18 ? 0 : 1 / max(420, speed)
+        arcadeStick.target = CGPoint(x: mouseVelocity.dx * 10 * gain, y: -mouseVelocity.dy * 7 * gain)
+        arcadeStick.step(dt: dt, stiffness: 200, damping: 20)
+
+        arcadeKeyButtons = arcadeKeyButtons.filter { keys.contains($0.key) }
+        let held = Set(arcadeKeyButtons.values)
+        var pressed = Array(repeating: false, count: 8)
+        var latest: Int?
+        arcadePressure = 0
+        for i in pressed.indices {
+            pressed[i] = held.contains(i) || time < arcadeTapUntil[i]
+            let target: CGFloat = pressed[i] ? 1 : 0
+            arcadeButtonPressure[i] += max(-dt*15, min(dt*22, target-arcadeButtonPressure[i]))
+            arcadePressure = max(arcadePressure, arcadeButtonPressure[i])
+            if pressed[i] {
+                if let previous = latest {
+                    if arcadeTapUntil[i] > arcadeTapUntil[previous] { latest = i }
+                } else { latest = i }
+            }
+        }
+        if arcadeButton < 0 || !pressed[arcadeButton] { arcadeButton = latest ?? -1 }
+        if arcadeButton >= 0 { arcadeLastButton = arcadeButton }
+        let ball = arcadeBall, button = Self.arcadeButtonCenter(arcadeLastButton)
+        leftPaw.target = CGPoint(x: ball.x, y: ball.y-7)
+        rightPaw.target = CGPoint(x: button.x, y: button.y-12+9*arcadeButtonPressure[arcadeLastButton])
+        leftPawTyping = false
+        rightPawTyping = false
+        leftPawOnMouse = false
+        hindFootActive.target = 0
+    }
 
     // Paw mode flags (for crisp outline & posture rendering)
     private(set) var leftPawOnMouse = false
@@ -351,6 +450,11 @@ final class CatPhysics {
 
     var feeding: Bool { treatAge >= 0 }
     var bowlVisible: Bool { feeding && treatAge < Self.bowlEnd }
+    var dangoLowering: CGFloat {
+        let remaining = scoldUntil - time
+        return Self.ease((1.2 - remaining) / 0.16) * Self.ease(remaining / 0.18)
+    }
+    var guardingDango: Bool { bowlVisible && time < scoldUntil }
     var angry: Bool { (bellyHovered && usingDesk) || time < angryUntil }
     var angerMarkProgress: CGFloat {
         let turnAge = time - turnScoldTime
@@ -389,6 +493,158 @@ final class CatPhysics {
         restStarted = CACurrentMediaTime()
         treatAge = -1
         clearDesk()
+    }
+
+    private var dopeyIdleTime: CGFloat = 0
+    private var reachAge: CGFloat = 0
+    private var missedReach: CGFloat = 0
+    private var boxUntil: CGFloat = 0
+    private static let dopeyGestureDuration: CGFloat = 3.4
+    private var clickedGesture = -1
+    private var clickedGestureUntil: CGFloat = 0
+    var doingDopeyGesture: Bool { time < clickedGestureUntil || time < boxUntil || reachAge > 0 || dopeyIdleTime >= 4 }
+
+    func clickDopeyCat() {
+        boxUntil = 0
+        clickedGesture = (clickedGesture + 1) % Self.dopeyGestures.count
+        clickedGestureUntil = time + Self.dopeyGestureDuration
+        dopeyIdleTime = 0
+    }
+
+    func enterDopeySkin() {
+        wake()
+        treatAge = -1
+        ignoringUntil = 0
+        backPuffUntil = 0
+        turnProgress = 0
+        turn = 0
+        furPuff = 0
+        furPuffTarget = 0
+        pendingMeals = 0
+        dopeyIdleTime = 0
+        clickedGesture = -1
+        clickedGestureUntil = 0
+        punchReach = Spring1D(0)
+        reachAge = 0
+        missedReach = 0
+        boxUntil = 0
+        jumpLift = 0
+        clearDesk()
+    }
+
+    private struct GestureFrame {
+        let time: CGFloat
+        let left, right: CGPoint
+        let rollDegrees, headDrop, reach: CGFloat
+
+        init(_ time: CGFloat, _ lx: CGFloat, _ ly: CGFloat, _ rx: CGFloat, _ ry: CGFloat,
+             _ rollDegrees: CGFloat, _ headDrop: CGFloat, _ reach: CGFloat = 0) {
+            self.time = time
+            left = CGPoint(x: lx, y: ly)
+            right = CGPoint(x: rx, y: ry)
+            self.rollDegrees = rollDegrees
+            self.headDrop = headDrop
+            self.reach = reach
+        }
+    }
+
+    private static let dopeyGestures: [[GestureFrame]] = [
+        [ // wave
+            .init(0, -15, 0, 15, 0, 0, 0),
+            .init(0.15, -18, 5, 18, 4, -4, 5),
+            .init(0.37, -49, -45, 31, 5, 9, -4),
+            .init(0.55, -58, -50, 33, 7, 12, -5),
+            .init(0.72, -43, -33, 29, 4, 4, 1),
+            .init(0.9, -65, -49, 35, 8, 13, -3),
+            .init(1.13, -44, -32, 30, 4, 4, 1),
+            .init(1.34, -65, -49, 35, 8, 13, -3),
+            .init(1.72, -61, -46, 33, 7, 10, -2),
+            .init(1.94, -43, -34, 30, 4, 4, 1),
+            .init(2.16, -65, -48, 35, 8, 13, -3),
+            .init(2.47, -58, -45, 32, 6, 9, -2),
+            .init(2.84, -30, -10, 22, 4, 3, 2),
+            .init(3.18, -15, 0, 15, 0, 0, 0),
+        ],
+        [ // clap
+            .init(0, -15, 0, 15, 0, 0, 0),
+            .init(0.24, -45, -1, 45, -1, 0, -2),
+            .init(0.33, -13, -6, 13, -6, 0, 3),
+            .init(0.44, -13, -6, 13, -6, 0, 3),
+            .init(0.61, -45, -1, 45, -1, 0, -2),
+            .init(0.64, -45, -1, 45, -1, 0, -2),
+            .init(0.95, -15, 0, 15, 0, 0, 0),
+        ],
+        [ // think
+            .init(0, -15, 0, 15, 0, 0, 0),
+            .init(0.16, -20, 3, 21, 2, 3, 3),
+            .init(0.4, -4, -24, 18, -7, -4, -2),
+            .init(0.72, -4, -24, 18, -7, -9, 1),
+            .init(1.04, -5, -23, 17, -8, -12, 4),
+            .init(1.74, -5, -23, 17, -8, -12, 4),
+            .init(2.02, -7, -26, 17, -8, -8, -2),
+            .init(2.43, -7, -26, 17, -8, -8, -2),
+            .init(2.84, -12, -8, 16, -3, -3, 1),
+            .init(3.17, -15, 0, 15, 0, 0, 0),
+        ],
+        [ // attention
+            .init(0, -15, 0, 15, 0, 0, 0),
+            .init(0.13, -18, 4, 18, 4, 0, 5),
+            .init(0.28, -39, -9, 39, -9, 0, -7),
+            .init(0.42, -38, -8, 38, -8, 0, -6),
+            .init(0.57, -32, 18, 32, 18, 0, -1),
+            .init(0.74, -32, 15, 32, 15, 0, -3),
+            .init(2.28, -32, 15, 32, 15, 0, -3),
+            .init(2.54, -30, 13, 30, 13, 2, 1),
+            .init(2.98, -15, 0, 15, 0, 0, 0),
+        ],
+        [ // boxing
+            .init(0, -15, 0, 15, 0, 0, 0, 0),
+            .init(0.24, -18, -12, 18, -12, 0, 1, 0),
+            .init(0.32, -32, -26, 15, -10, 9, -4, -1),
+            .init(0.4, -32, -26, 15, -10, 9, -4, -1),
+            .init(0.49, -18, -12, 18, -12, 0, 1, 0),
+            .init(0.61, -15, -10, 32, -26, -9, -4, 1),
+            .init(0.69, -15, -10, 32, -26, -9, -4, 1),
+            .init(0.82, -18, -12, 18, -12, 0, 1, 0),
+            .init(1.05, -15, 0, 15, 0, 0, 0, 0),
+        ],
+    ]
+
+    private func poseReach(_ cursor: CGPoint) -> (tilt: CGFloat, drop: CGFloat) {
+        let beat = reachAge.truncatingRemainder(dividingBy: 1.08)
+        let flight = max(0, min(1, (beat - 0.15) / 0.66))
+        let arc = 4 * flight * (1 - flight)
+        let dip = beat < 0.15 ? sin(beat * .pi / 0.15) : sin(max(0, min(1, (beat - 0.81) / 0.18)) * .pi)
+        jumpLift = 36 * arc - 4 * dip
+        let stretch = Self.ease(arc)
+        let x = Self.seatAnchor.x + bodyShiftX.value
+        let center = x + max(-48, min(48, cursor.x - x)) * stretch
+        let spread = 23 - 12 * stretch + 32 * sin(stretch * .pi)
+        let y = 183 - jumpLift + (max(cursor.y, 61) - 147) * stretch
+        leftPaw.target = CGPoint(x: center - spread, y: y)
+        rightPaw.target = CGPoint(x: center + spread, y: y)
+        return ((cursor.x - x) * 0.0013 * arc, 3 * dip - 3 * arc)
+    }
+
+    private func poseDopeyHands(_ gesture: Int, at elapsed: CGFloat) -> (tilt: CGFloat, drop: CGFloat) {
+        var t = elapsed
+        if (gesture == 1 || gesture == 4) && elapsed >= 0.24 {
+            let period: CGFloat = gesture == 1 ? 0.40 : 0.58
+            let repeats: CGFloat = gesture == 1 ? 7 : 5
+            let age = elapsed - 0.24
+            t = age < period * repeats ? 0.24 + age.truncatingRemainder(dividingBy: period) : elapsed - period * (repeats - 1)
+        }
+        let frames = Self.dopeyGestures[gesture]
+        var next = 1
+        while next + 1 < frames.count && t > frames[next].time { next += 1 }
+        let a = frames[next-1], b = frames[next]
+        let mix = Self.ease((t-a.time)/(b.time-a.time))
+        func blend(_ start: CGFloat, _ end: CGFloat) -> CGFloat { start + (end-start)*mix }
+        let x = Self.seatAnchor.x + bodyShiftX.value, y = 184 + sin(time * 2.1) * 1.6
+        leftPaw.target = CGPoint(x: x + blend(a.left.x,b.left.x), y: y + blend(a.left.y,b.left.y))
+        rightPaw.target = CGPoint(x: x + blend(a.right.x,b.right.x), y: y + blend(a.right.y,b.right.y))
+        punchReach.target = blend(a.reach,b.reach)
+        return (blend(a.rollDegrees,b.rollDegrees) * .pi / 180, blend(a.headDrop,b.headDrop))
     }
 
     func wake() {
@@ -487,6 +743,11 @@ final class CatPhysics {
 
     func clickBowl(take: Bool) {
         guard bowlVisible, !ignoring else { return }
+        if CatSettings.shared.coatTheme == .dopeyCat {
+            scoldUntil = take ? time : time + 1.2
+            if take { treatAge = Self.bowlEnd }
+            return
+        }
         flattenEars()
         if take {
             turnScoldTime = time
@@ -606,8 +867,11 @@ final class CatPhysics {
         let puffTarget = now < backPuffUntil ? furPuffTarget : 0
         furPuff += min(dt * 4.5, max(-dt, puffTarget - furPuff))
         if feeding && time >= scoldUntil {
-            treatAge += bowlVisible ? dt * Self.bowlEnd / mealSeconds : dt
-            if treatAge >= 5.24 {
+            let dopeyMeal = CatSettings.shared.coatTheme == .dopeyCat
+            let eating = bowlVisible
+            let end: CGFloat = dopeyMeal ? (eating ? Self.bowlEnd : Self.bowlEnd + 2.85) : 5.24
+            treatAge += eating ? dt * Self.bowlEnd / mealSeconds * (dopeyMeal ? 2.2 : 1) : dt
+            if treatAge >= end {
                 treatAge = -1
                 routineStarted = now
             }
@@ -647,6 +911,22 @@ final class CatPhysics {
 
     func triggerKeyDown(_ key: PhysicalKey, at timestamp: CFTimeInterval? = nil) {
         guard usingDesk else { return }
+        if CatSettings.shared.deskMode == .arcade {
+            clickedGestureUntil = 0
+            let order = [0, 4, 1, 5, 2, 6, 3, 7]
+            var button = 0
+            for _ in order {
+                button = order[arcadeNextButton]
+                arcadeNextButton = (arcadeNextButton + 1) % order.count
+                if !arcadeKeyButtons.contains(where: { $0.key != key && $0.value == button }) { break }
+            }
+            arcadeButton = button
+            arcadeLastButton = button
+            arcadeKeyButtons[key] = button
+            arcadeTapUntil[button] = time + 0.15
+            return
+        }
+        clickedGestureUntil = 0
         let now = timestamp ?? CACurrentMediaTime()
         if tabletMode {
             pressTabletKey(key, now: now)
@@ -660,7 +940,7 @@ final class CatPhysics {
 
         var footTap = false
         var tailTap = false
-        if CatSettings.shared.footEasterEgg {
+        if CatSettings.shared.footEasterEgg && CatSettings.shared.coatTheme != .dopeyCat {
             let previousSpeed = typingTaps.count
             typingTaps.removeAll { now - $0 >= 1 }
             if typingTaps.isEmpty { typingBeat = 0 }
@@ -701,7 +981,7 @@ final class CatPhysics {
     }
 
     func triggerMouseClick(button: Int, isDown: Bool) {
-        guard usingDesk, !tabletMode, !overControl else { return }
+        guard usingDesk, !tabletMode, !overControl, CatSettings.shared.deskMode != .arcade else { return }
         sleepiness = 0
         if isDown {
             let now = CACurrentMediaTime()
@@ -834,8 +1114,11 @@ final class CatPhysics {
         let lastInput = max(max(curLastKeyTime, lastKeyRelease), max(curLastMouseMove, curLastMouseClick))
         let otherMouseHeld = scripted == nil && engine.otherMouseDown
         let working = !activeKeys.isEmpty || curLeftMouse || curRightMouse || otherMouseHeld || (lastInput > 0 && now - lastInput < 2)
-        updateRoutine(now: now, dt: dt, rawDt: rawDt, lastInput: lastInput, working: working, automatic: scripted == nil)
+        let dopey = CatSettings.shared.coatTheme == .dopeyCat
+        let arcadeMode = CatSettings.shared.deskMode == .arcade
+        updateRoutine(now: now, dt: dt, rawDt: rawDt, lastInput: lastInput, working: working, automatic: scripted == nil && !arcadeMode)
         let desk = usingDesk
+        let arcade = arcadeMode && desk
         let music = listening && !feeding
         let targetSleep: CGFloat = sleeping && !feeding && !ignoring ? 1 : 0
         sleepiness += (targetSleep - sleepiness) * dt * (targetSleep > sleepiness ? 3 : 5)
@@ -856,7 +1139,7 @@ final class CatPhysics {
         let lift = washLift
         let wipe = Self.ease((treatAge - 3.31) / 0.25) * (0.5 - 0.5 * cos((treatAge - 3.31) * 11.5))
         let mouseSpeed = hypot(curMouseVel.dx, curMouseVel.dy)
-        if desk && mouseSpeed > 460 && petHeadIntensity < 0.25 && petBodyIntensity < 0.25 {
+        if desk && !arcade && mouseSpeed > 460 && petHeadIntensity < 0.25 && petBodyIntensity < 0.25 {
             // Build up smoothly & responsively with fast mouse waving (laser-pointer effect!)
             let boost = min(1.0, (mouseSpeed - 460) / 1100.0)
             huntIntensity.target = min(1.0, huntIntensity.target + (0.45 + boost * 1.15) * dt)
@@ -872,14 +1155,14 @@ final class CatPhysics {
         let tapHoldWindow: CFTimeInterval = 0.14
         let mouseRecent = (now - curLastMouseMove < 2.2) || curLeftMouse || curRightMouse
         let mouseActivelyUsed = (now - curLastMouseMove < 0.75) || curLeftMouse || curRightMouse
-        let typing = desk && curLastKeyTime > 0 && now - curLastKeyTime <= 2
+        let typing = !dopey && desk && !arcade && curLastKeyTime > 0 && now - curLastKeyTime <= 2
         if typing {
             if typingSince == nil { typingSince = curLastKeyTime }
         } else {
             typingSince = nil
         }
         let impatient = typingSince.map { now - $0 > 60 } == true
-        let extraTyping = desk && !tabletMode && CatSettings.shared.footEasterEgg
+        let extraTyping = !dopey && desk && !tabletMode && !arcade && CatSettings.shared.footEasterEgg
         let footKey: PhysicalKey? = extraTyping ? recentFootKey.flatMap { now - $0.time < 0.20 ? $0.key : nil } : nil
         let tailKey: (key: PhysicalKey, time: CFTimeInterval)? = extraTyping && !impatient && tailImpatience <= 0.001
             ? recentTailKey.flatMap { now - $0.time < 0.24 ? $0 : nil } : nil
@@ -953,7 +1236,7 @@ final class CatPhysics {
             leftPawTyping = false
             leftPawOnMouse = true
         } else {
-            leftPaw.target = CatPhysics.leftPawRest
+            leftPaw.target = dopey ? CGPoint(x: Self.seatAnchor.x + bodyShiftX.value - 15, y: 184 + sin(time * 2.1) * 1.6) : Self.leftPawRest
             leftPawTyping = false
             leftPawOnMouse = false
         }
@@ -963,7 +1246,7 @@ final class CatPhysics {
             rightPaw.target = KeyboardLayout.canvasPoint(for: rk)
             rightPawTyping = true
         } else {
-            rightPaw.target = CatPhysics.rightPawRest
+            rightPaw.target = dopey ? CGPoint(x: Self.seatAnchor.x + bodyShiftX.value + 15, y: 184 + sin(time * 2.1) * 1.6) : Self.rightPawRest
             rightPawTyping = false
         }
 
@@ -983,12 +1266,58 @@ final class CatPhysics {
             leftPawOnMouse = false
             rightPawTyping = false
             hindFootActive.target = 0
-            leftPaw.target = CGPoint(x: 167 - 7 * lean, y: 231 - 7 * sleepiness)
-            rightPaw.target = CGPoint(x: 201 + 7 * lean + lift * (-7 + 17 * wipe),
-                                      y: 231 - 7 * sleepiness - lift * (75 + 16 * wipe))
+            if dopey && music {
+                leftPaw.target = CGPoint(x: Self.seatAnchor.x - 15, y: 184)
+                rightPaw.target = CGPoint(x: Self.seatAnchor.x + 15, y: 184)
+            } else {
+                leftPaw.target = CGPoint(x: 167 - 7 * lean, y: 231 - 7 * sleepiness)
+                rightPaw.target = CGPoint(x: 201 + 7 * lean + lift * (-7 + 17 * wipe),
+                                          y: 231 - 7 * sleepiness - lift * (75 + 16 * wipe))
+            }
         }
 
+        if !dopey || !desk { clickedGestureUntil = 0 }
+        let clicked = time < clickedGestureUntil
+        let scale = max(0.2, windowFrameInScreen.width / Self.canvasSize.width)
+        let cursorCanvas = CGPoint(x: (curMouseLoc.x - windowFrameInScreen.minX) / scale,
+                                   y: (windowFrameInScreen.maxY - curMouseLoc.y) / scale)
+        let lastKey = max(curLastKeyTime, lastKeyRelease)
+        let canReach = dopey && desk && CatSettings.shared.petInteraction && activeKeys.isEmpty &&
+            (lastKey == 0 || now - lastKey >= 0.65) && !curLeftMouse && !curRightMouse && !overControl
+        if !canReach { boxUntil = 0 }
+        // Use the standing pose for the hover band throughout the jump.
+        if canReach && !clicked && time >= boxUntil && abs(cursorCanvas.x - Self.seatAnchor.x) <= 110 &&
+            (-68...92).contains(cursorCanvas.y) {
+            reachAge += dt
+            func touches(_ paw: CGPoint) -> Bool { hypot(paw.x - cursorCanvas.x, paw.y - cursorCanvas.y) <= 15.2 }
+            missedReach = touches(leftPaw.point) || touches(rightPaw.point) ? 0 : missedReach + rawDt
+            if missedReach >= 5 {
+                boxUntil = time + Self.dopeyGestureDuration
+                reachAge = 0
+                missedReach = 0
+            }
+        } else {
+            reachAge = 0
+            missedReach = 0
+        }
+        dopeyIdleTime = dopey && desk && !arcade && !clicked && reachAge == 0 && time >= boxUntil &&
+            !working && !overControl ? dopeyIdleTime + dt : 0
+        var gestureHead: (tilt: CGFloat, drop: CGFloat) = (0, 0)
+        punchReach.target = 0
+        if reachAge == 0 { jumpLift *= max(0, 1 - dt * 16) }
+        if doingDopeyGesture {
+            leftPawOnMouse = false
+            leftPawTyping = false
+            rightPawTyping = false
+            let elapsed = dopeyIdleTime - 4
+            if reachAge > 0 { gestureHead = poseReach(cursorCanvas) }
+            else if time < boxUntil { gestureHead = poseDopeyHands(4, at: Self.dopeyGestureDuration - (boxUntil - time)) }
+            else if clicked { gestureHead = poseDopeyHands(clickedGesture, at: Self.dopeyGestureDuration - (clickedGestureUntil - time)) }
+            else { gestureHead = poseDopeyHands(Int(elapsed / 6) % Self.dopeyGestures.count, at: elapsed.truncatingRemainder(dividingBy: 6)) }
+        }
+        updateArcade(dt: dt, playing: arcade && !doingDopeyGesture, keys: activeKeys, mouseVelocity: curMouseVel)
         leftPaw.step(dt: dt, stiffness: 360, damping: 24)
+        if dopey { punchReach.step(dt: dt, stiffness: 360, damping: 24) }
         rightPaw.step(dt: dt, stiffness: 360, damping: 24)
         hindFoot.step(dt: dt, stiffness: 320, damping: 22)
         hindFootActive.step(dt: dt, stiffness: 260, damping: 22)
@@ -1007,12 +1336,17 @@ final class CatPhysics {
             targetShiftX = (avgX - 184) * 0.14
             targetBodyTilt = (avgX - 184) * 0.0011
         }
+        if arcade && !doingDopeyGesture {
+            targetShiftX = arcadeStick.point.x * 0.30
+            targetBodyTilt = arcadeStick.point.x * 0.006
+        }
         bodyShiftX.target = max(-16, min(16, targetShiftX))
-        bodyTilt.target = max(-0.12, min(0.12, targetBodyTilt)) + 0.075 * sway + 0.045 * sleepiness
+        targetBodyTilt += gestureHead.tilt * 0.55
+        bodyTilt.target = max(-0.12, min(0.12, targetBodyTilt)) + (dopey ? 0 : 0.075 * sway) + 0.045 * sleepiness
         // Coiled low hunting crouch when chasing a fast-moving mouse!
         bodySquash.target = 1.0 - hunt * 0.11 - 0.20 * sleepiness - 0.12 * lean
 
-        headOffsetY.target = (leftPawTyping || rightPawTyping) ? 3.5 : (sleepiness * 28 + hunt * 10.5 + lean * 45 + bite * 5.5 + lift * 4 + pulse * 9)
+        headOffsetY.target = (leftPawTyping || rightPawTyping) ? 3.5 : (sleepiness * 28 + hunt * 10.5 + lean * 45 + bite * 5.5 + lift * 4 + pulse * 9 + gestureHead.drop)
         earFold.target = max(petHeadIntensity * 0.7, petBodyIntensity * 0.45) + sleepiness * 0.25 - hunt * 0.18
         earTwitch.target = 0
 
@@ -1037,7 +1371,6 @@ final class CatPhysics {
         let eyeOriginCanvas = CGPoint(x: CatPhysics.seatAnchor.x + bodyShiftX.value, y: 124 + headOffsetY.value)
 
         // Compute normalized vector from cat head to real macOS screen cursor
-        let scale = max(0.2, windowFrameInScreen.width / CatPhysics.canvasSize.width)
         let headScreenX = windowFrameInScreen.minX + eyeOriginCanvas.x * scale
         let headScreenY = windowFrameInScreen.maxY - eyeOriginCanvas.y * scale
         let cursor = curMouseLoc
@@ -1050,7 +1383,10 @@ final class CatPhysics {
 
         let lookTargetX: CGFloat
         let lookTargetY: CGFloat
-        if typingRecently && !mouseMovedRecently, let keyPt = lastTypedPoint {
+        if arcade && !doingDopeyGesture {
+            lookTargetX = arcadeStick.point.x * 0.026
+            lookTargetY = -0.12 + 0.055 * arcadePressure
+        } else if typingRecently && !mouseMovedRecently, let keyPt = lastTypedPoint {
             let kdx = max(-0.85, min(0.85, (keyPt.x - eyeOriginCanvas.x) / 95.0))
             let kdy = max(-0.3, min(0.92, (keyPt.y - eyeOriginCanvas.y) / 125.0))
             lookTargetX = kdx
@@ -1088,7 +1424,9 @@ final class CatPhysics {
         if now - lastPetTime > 0.28 {
             headTilt.target = bodyTilt.target * 0.45 + headYaw.value * (0.11 + hunt * 0.05) - headYaw.value * headPitch.value * 0.04
         }
+        if doingDopeyGesture { headTilt.target = gestureHead.tilt }
         if !desk { headTilt.target = 0.115 * sleepiness + 0.21 * lift + 0.24 * sway }
+        if arcade && !doingDopeyGesture { headTilt.target = arcadeStick.point.x * 0.008 + 0.022 * arcadePressure }
         let shakeAge = time - lastEarShake
         if desk && shakeAge < 0.5 { headTilt.velocity += dt * 115 * cos(shakeAge * 30) * (1 - 2 * shakeAge) }
         headTilt.step(dt: dt, stiffness: 130, damping: 16)
@@ -1123,16 +1461,16 @@ final class CatPhysics {
         }
 
         // 7. Tail wag speed reacts organically to energy / petting / hunting tension!
-        tailImpatience += ((impatient ? 1 : 0) - tailImpatience) * min(1, dt * 6)
+        tailImpatience = dopey ? 0 : tailImpatience + ((impatient ? 1 : 0) - tailImpatience) * min(1, dt * 6)
         tailSlapTime = impatient || tailImpatience > 0.01 ? tailSlapTime + dt : 0
         let kpmBoost = desk ? min(2.4, CGFloat(engine.currentKPM) / 160.0) : 0
         let petBoost = max(petHeadIntensity, petBodyIntensity) * 1.4
         let huntBoost = hunt * 2.8
         let tailSpeed: CGFloat = 1.85 + kpmBoost + petBoost + huntBoost - sleepiness * 1.1
-        tailPhase += dt * tailSpeed
+        if !dopey { tailPhase += dt * tailSpeed }
 
         // 8. Update per-keycap glows
-        let visualActive: Set<PhysicalKey> = desk && !tabletMode ? Set(activeKeys.map { $0.visualKey }) : []
+        let visualActive: Set<PhysicalKey> = desk && !tabletMode && !arcade ? Set(activeKeys.map { $0.visualKey }) : []
         for (k, v) in keyGlow {
             if visualActive.contains(k) {
                 keyGlow[k] = 1.0

@@ -1,13 +1,15 @@
 #include <winver.h>
-#include "src/OrcaVersion.h"
+#include <SachiVersion.h>
 
-#define STRINGIFY_VALUE(value) #value
-#define STRINGIFY(value) STRINGIFY_VALUE(value)
-#define VERSION_TEXT STRINGIFY(KUROCAT_ORCA_RELEASE) ".0.0.0"
+#ifdef SACHICAT_EMBED_MANIFEST
+1 24 "SachiCat.manifest"
+#endif
+
+101 RCDATA "../Resources/DopeyCat.png"
 
 1 VERSIONINFO
- FILEVERSION KUROCAT_ORCA_RELEASE,0,0,0
- PRODUCTVERSION KUROCAT_ORCA_RELEASE,0,0,0
+ FILEVERSION SACHICAT_VERSION_FIELDS
+ PRODUCTVERSION SACHICAT_VERSION_FIELDS
  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -18,11 +20,11 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "FileDescription", "KuroCat Orca Cat Desktop Pet"
-            VALUE "FileVersion", VERSION_TEXT
-            VALUE "OriginalFilename", "KuroCat.exe"
-            VALUE "ProductName", "KuroCat Orca Cat"
-            VALUE "ProductVersion", VERSION_TEXT
+            VALUE "FileDescription", "SachiCat Desktop Pet"
+            VALUE "FileVersion", SACHICAT_VERSION_TEXT
+            VALUE "OriginalFilename", "SachiCat.exe"
+            VALUE "ProductName", "SachiCat"
+            VALUE "ProductVersion", SACHICAT_VERSION_TEXT
         END
     END
     BLOCK "VarFileInfo"
