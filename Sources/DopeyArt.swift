@@ -61,7 +61,7 @@ enum DopeyArt {
     }
 
     private static let rgb = CGColorSpaceCreateDeviceRGB()
-    private static let eggBlue = CGGradient(colorsSpace: rgb, components: [
+    private static let eggBlue = CGGradient(colorSpace: rgb, colorComponents: [
         0.56, 0.64, 0.87, 1, 0.25, 0.32, 0.55, 1
     ], locations: [0, 1], count: 2)!
 
@@ -176,7 +176,7 @@ enum DopeyArt {
         ctx.restoreGState()
     }
 
-    private static let stain = CGGradient(colorsSpace: rgb, components: [
+    private static let stain = CGGradient(colorSpace: rgb, colorComponents: [
         0.392,0.325,0.294,1, 0.239,0.200,0.192,1
     ], locations:[0,1],count:2)!
 
@@ -269,7 +269,7 @@ enum DopeyArt {
             let r = radius*(0.53+0.77*expansion)
             let gray = (134+24*sin(dx*0.13))/255
             let bright = gray+30/255
-            let smoke = CGGradient(colorsSpace:rgb, components:[
+            let smoke = CGGradient(colorSpace:rgb, colorComponents:[
                 bright,bright,bright,243/255*fade, gray,gray,gray,205/255*fade, gray,gray,gray,0
             ], locations:[0,0.74,1], count:3)!
             ctx.saveGState()
