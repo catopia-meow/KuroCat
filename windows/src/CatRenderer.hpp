@@ -250,6 +250,7 @@ public:
         g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
 
         if (settings.coatTheme == CatCoatTheme::DopeyCat && dragging) {
+            DopeyArt::eggTrail(g, CatPhysics::SeatAnchor.x, 155, physics);
             DopeyArt::egg(g, CatPhysics::SeatAnchor.x, 155, physics.eggRoll);
             return;
         }

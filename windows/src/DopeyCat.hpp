@@ -10,7 +10,9 @@ enum Tile { Hood, Ear, Face, Eye, Shirt, Hand, Foot, SideBody, Tie };
 
 // Keep decoded pixels independent of the resource stream and release before GDI+ shuts down.
 inline std::unique_ptr<Gdiplus::Bitmap> atlas;
-inline void release() { atlas.reset(); }
+inline std::unique_ptr<Gdiplus::Bitmap> eggSprite;
+inline float eggSpriteScale = 0;
+inline void release() { atlas.reset(); eggSprite.reset(); }
 
 inline Gdiplus::Bitmap& artwork() {
     if (!atlas) {
@@ -97,6 +99,49 @@ inline void egg(Gdiplus::Graphics& g, float x, float y, float angle) {
     tile(g, Hand, -42,26, 0.90f,0.90f);
     tile(g, Hand, 42,26, 0.90f,0.90f);
     g.Restore(state);
+}
+
+// Fading copies of the egg where it just rolled, oldest (faintest) first. The unrotated egg is
+// cached once per scale and each ghost draws it at its own roll.
+inline void eggTrail(Gdiplus::Graphics& g, float x, float y, const CatPhysics& p) {
+    using namespace Gdiplus;
+    if (p.eggTrail.empty()) return;
+    constexpr float half = 100.0f; // Covers the ears and hands around the shell.
+    Matrix world;
+    g.GetTransform(&world);
+    REAL m[6];
+    world.GetElements(m);
+    const float scale = std::clamp(std::hypot(m[0], m[1]), 0.25f, 6.0f);
+    if (!eggSprite || std::abs(scale - eggSpriteScale) > 0.01f) {
+        const INT side = (INT)std::ceil(2 * half * scale);
+        eggSprite = std::make_unique<Bitmap>(side, side, PixelFormat32bppPARGB);
+        Graphics sg(eggSprite.get());
+        sg.SetSmoothingMode(SmoothingModeAntiAlias);
+        sg.SetPixelOffsetMode(PixelOffsetModeHighQuality);
+        sg.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        sg.Clear(Color(0, 0, 0, 0));
+        sg.ScaleTransform(scale, scale);
+        sg.TranslateTransform(half, half);
+        egg(sg, 0, 0, 0);
+        eggSpriteScale = scale;
+    }
+    const REAL w = (REAL)eggSprite->GetWidth(), h = (REAL)eggSprite->GetHeight();
+    for (const auto& s : p.eggTrail) {
+        const float ox = s.travel.x - p.eggTravel.x, oy = s.travel.y - p.eggTravel.y;
+        if (std::hypot(ox, oy) < 4.0f) continue;
+        const float t = std::clamp(s.age / CatPhysics::EggTrailLife, 0.0f, 1.0f);
+        const float alpha = 0.45f * (1 - t) * (1 - t);
+        const float size = 1.0f - 0.10f * t;
+        ColorMatrix fade = {{{1,0,0,0,0},{0,1,0,0,0},{0,0,1,0,0},{0,0,0,alpha,0},{0,0,0,0,1}}};
+        ImageAttributes attrs;
+        attrs.SetColorMatrix(&fade);
+        const auto state = g.Save();
+        g.TranslateTransform(x + ox, y + oy);
+        g.RotateTransform(s.roll * 57.2957795f);
+        g.ScaleTransform(size, size);
+        g.DrawImage(eggSprite.get(), RectF(-half, -half, 2 * half, 2 * half), 0, 0, w, h, UnitPixel, &attrs);
+        g.Restore(state);
+    }
 }
 
 inline void body(Gdiplus::Graphics& g, const CatPhysics& p, float x, float y, float step = 0) {
