@@ -2,6 +2,7 @@
 - 修复加白猫（美短、橘白猫）前腿颜色：前腿现在是白色，和白爪一致。
 - 鼠标悬停在猫身上时，用滚轮可以直接缩放大小（50% 到 200%）；Mac 触控板也支持双指捏合缩放。
 - macOS 版空闲时更省电：刷新计时器跟随帧率调整，屏幕或电脑睡眠时暂停绘制。
+- 右键菜单的「检查更新」标明会前往 GitHub 发布页。
 - Windows 下载 `SachiCat-Windows-x64.exe`。macOS 下载 `SachiCat-macOS-universal.zip`，解压后将 `SachiCat.app` 放入「应用程序」。
 - **macOS 版未在 Mac 上实机测试。** 通用包包含 Apple Silicon 和 Intel 两种架构。
 - Linux 提供 x86_64 和 ARM64 的压缩包及 Debian 安装包。
