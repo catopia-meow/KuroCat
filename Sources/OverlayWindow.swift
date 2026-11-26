@@ -56,10 +56,7 @@ final class CatCanvasView: NSView {
         let showPill = InputEngine.shared.status == .needsPermission
         CatRenderer.draw(in: ctx, physics: physics, showPermissionPill: showPill, dragging: isDragging)
         if settings.showControls && !(settings.coatTheme == .dopeyCat && isDragging) {
-            CatRenderer.drawControls(in: ctx, physics: physics, mode: settings.deskMode,
-                                     doubleClickWake: settings.doubleClickWake,
-                                     keyBubbles: settings.showKeyBadges, mouseBubbles: settings.showMouseBadges,
-                                     hover: hover, held: held)
+            CatRenderer.drawControls(in: ctx, physics: physics, mode: settings.deskMode, hover: hover, held: held)
         }
 
         ctx.restoreGState()

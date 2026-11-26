@@ -29,10 +29,16 @@
 
 namespace {
 
+// The app was called KuroCat before it became SachiCat. These names stay as they are on purpose:
+// renaming them would reset every existing user's settings and launch-at-login entry, and would
+// stop a new version from finding and replacing an older running copy.
 constexpr const wchar_t* VERSION_PROP = L"KuroCatVersion";
 constexpr const wchar_t* TRAY_OWNER_CLASS = L"KuroCatTrayOwnerClass";
 constexpr const wchar_t* OVERLAY_CLASS = L"KuroCatOverlayWindowClass";
-constexpr double FRAME_INTERVAL = 1.0 / 60.0;
+constexpr double FRAME_INTERVAL = 1.0 / 60.0;          // while typing, moving the mouse or interacting
+constexpr double IDLE_FRAME_INTERVAL = 1.0 / 30.0;     // awake but nobody is using the computer
+constexpr double SLEEPING_FRAME_INTERVAL = 1.0 / 15.0; // asleep: only slow breathing and floating z's
+constexpr double ACTIVE_INPUT_WINDOW = 2.0;            // seconds of full frame rate after the last input
 constexpr INT_PTR INSTANCE_VERSION = SACHICAT_INSTANCE_VERSION;
 constexpr wchar_t ORCA_RELEASE_PAGE[] = L"https://github.com/catopia-meow/SachiCat/releases";
 constexpr UINT WM_TRAYICON = WM_APP + 1;
@@ -897,6 +903,7 @@ void runCommand(AppState& app, UINT cmd) {
 }
 
 void runControl(AppState& app, PetControl button) {
+    button = CatRenderer::resolveControl(button, app.physics);
     if (!CatRenderer::controlEnabled(button, app.physics)) return;
     switch (button) {
         case PetControl::Treat: runCommand(app, CMD_TREAT); break;
@@ -1088,10 +1095,24 @@ void tickAndRender(AppState& app) {
 
 /// Renders at most once per FRAME_INTERVAL; called from both the main loop and WM_TIMER (the latter
 /// keeps the cat alive while a menu / message box runs its own modal loop).
+/// Adaptive frame pacing, like the Linux build: full 60fps only while something is happening.
+/// Redrawing the whole cat through GDI+ and UpdateLayeredWindow every 16ms kept a CPU core busy
+/// even when nobody touched the computer.
+double frameIntervalFor(const AppState& app, double now) {
+    if (app.isDragging || app.petPressed || app.heldControl != PetControl::None ||
+        app.hoveredControl != PetControl::None || app.demoActive || app.physics.listening()) {
+        return FRAME_INTERVAL;
+    }
+    const double lastInput = std::max(app.input.lastKeyActivityTime, app.input.lastMouseMoveTime);
+    if (now - lastInput < ACTIVE_INPUT_WINDOW) return FRAME_INTERVAL;
+    if (app.physics.sleepiness > 0.96f) return SLEEPING_FRAME_INTERVAL;
+    return IDLE_FRAME_INTERVAL;
+}
+
 void renderIfDue(AppState& app) {
     double now = nowSeconds();
     if (now < app.nextFrameTime) return;
-    const double interval = app.physics.sleepiness > 0.96f ? 1.0 / 30.0 : FRAME_INTERVAL;
+    const double interval = frameIntervalFor(app, now);
     app.nextFrameTime = (now - app.nextFrameTime < interval) ? app.nextFrameTime + interval : now + interval;
     tickAndRender(app);
 }
@@ -1627,7 +1648,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         housekeeping(app);
     }
 
-    app.deskMonitor->stop = true;
+    app.deskMonitor->shutdown();
     DopeyArt::release();
     g_app = nullptr;
     Gdiplus::GdiplusShutdown(gdipToken);

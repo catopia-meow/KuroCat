@@ -137,6 +137,7 @@ final class CatSettings {
 
     private init() {
         let d = UserDefaults.standard
+        // Defaults keys keep the app's former name, KuroCat, so existing users keep their settings.
         showControls = d.bool(forKey: "KuroCat.ControlsVisible")
         greenScreenCapture = d.bool(forKey: "KuroCat.GreenScreenCapture")
         doubleClickWake = d.object(forKey: "KuroCat.DoubleClickWake") as? Bool ?? true

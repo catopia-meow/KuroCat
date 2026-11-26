@@ -59,8 +59,8 @@ enum CatRenderer {
         if showPermissionPill && permissionPillRect.insetBy(dx: -4, dy: -4).contains(p) {
             return .permissionPill
         }
-        if showControls, let action = PetAction.allCases.first(where: { controlRect($0).contains(p) }) {
-            return .control(action)
+        if showControls, let action = barActions.first(where: { controlRect($0).contains(p) }) {
+            return .control(barAction(action, physics: physics))
         }
         if CatSettings.shared.coatTheme == .dopeyCat {
             if physics.bowlVisible && DopeyArt.dangoAt(p,physics) { return .bowl }
@@ -255,8 +255,17 @@ enum CatRenderer {
 
     static let controlsCanvasHeight: CGFloat = 352
 
+    /// Only the everyday actions live on the bar; double-click wake and the bubble toggles stay in
+    /// the menu. Sleep and wake share one slot that shows whichever applies (same as Windows).
+    static let barActions: [PetAction] = [.treat, .sleep, .music, .mode, .hide]
+
+    static func barAction(_ action: PetAction, physics: CatPhysics) -> PetAction {
+        action == .sleep && physics.sleeping ? .wake : action
+    }
+
     static func controlRect(_ action: PetAction) -> CGRect {
-        CGRect(x: 66 + CGFloat(action.rawValue) * 26, y: 322, width: 24, height: 22)
+        guard let slot = action == .wake ? 1 : barActions.firstIndex(of: action) else { return .null }
+        return CGRect(x: 118 + CGFloat(slot) * 26, y: 322, width: 24, height: 22)
     }
 
     private static func controlSymbol(_ action: PetAction, mode: DeskMode) -> String {
@@ -279,23 +288,26 @@ enum CatRenderer {
         }
     }
 
-    static func drawControls(in ctx: CGContext, physics: CatPhysics, mode: DeskMode,
-                             doubleClickWake: Bool, keyBubbles: Bool, mouseBubbles: Bool, hover: PetAction?, held: PetAction?) {
-        let left: CGFloat = 58
-        let group = CGRect(x: left, y: 318, width: 304-left, height: 30)
+    static func drawControls(in ctx: CGContext, physics: CatPhysics, mode: DeskMode, hover: PetAction?, held: PetAction?) {
+        let left: CGFloat = 110
+        let group = CGRect(x: left, y: 318, width: 254 - left, height: 30)
         fillRounded(in: ctx, group, radius: 9, color: rgb(0x242529, 0.92))
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-        for action in PetAction.allCases {
+        for slotAction in barActions {
+            let action = barAction(slotAction, physics: physics)
             let rect = controlRect(action)
-            let active = (action == .music && physics.listening) || action == .mode ||
-                (action == .doubleClickWake && doubleClickWake) ||
-                (action == .keyBubbles && keyBubbles) || (action == .mouseBubbles && mouseBubbles)
-            if action == held || action == hover || active {
+            // Every icon keeps the same colour; an "on" state is a short gold bar under the icon.
+            let active = action == .music && physics.listening
+            if action == held || action == hover {
                 fillRounded(in: ctx, rect, radius: 5, color: rgb(0xF8BA59, action == held ? 0.32 : 0.15))
             }
+            if active {
+                fillRounded(in: ctx, CGRect(x: rect.minX + 7, y: rect.maxY - 3.5, width: rect.width - 14, height: 2),
+                            radius: 1, color: rgb(0xF3BD70))
+            }
             let enabled = physics.canPerform(action)
-            let color = rgb(active ? 0xF3BD70 : 0xEDECEA, enabled ? 1 : 0.32)
+            let color = rgb(0xEDECEA, enabled ? 1 : 0.32)
             if action == .treat {
                 ctx.saveGState(); ctx.translateBy(x: rect.midX, y: rect.midY); ctx.rotate(by: .pi / 4)
                 ctx.setFillColor(color.cgColor)
@@ -679,7 +691,9 @@ enum CatRenderer {
             ctx.addPath(kPath)
             ctx.strokePath()
 
-            if showLegends {
+            // Legends are only a few pixels tall, so drawing all of them reads as noise. Show a
+            // legend only while its key glows, and fade it in and out with the glow.
+            if showLegends && glow > 0.05 {
                 let isSpace = cap.key == .space
                 let legend = isSpace ? "space" : keycapLegend(cap.key)
                 if !legend.isEmpty {
@@ -693,11 +707,12 @@ enum CatRenderer {
                         cx = sp.x
                         cy = sp.y + pressDy
                     }
+                    let legendAlpha = min(1, glow * 1.6)
                     let textColor: NSColor
                     if cap.isAmberAccent || theme != .midnightHacker {
-                        textColor = NSColor(calibratedRed: 0.14, green: 0.14, blue: 0.16, alpha: 0.78)
+                        textColor = NSColor(calibratedRed: 0.14, green: 0.14, blue: 0.16, alpha: 0.78 * legendAlpha)
                     } else {
-                        textColor = NSColor(calibratedRed: 0.88, green: 0.90, blue: 0.92, alpha: 0.82)
+                        textColor = NSColor(calibratedRed: 0.88, green: 0.90, blue: 0.92, alpha: 0.82 * legendAlpha)
                     }
                     let fontSize: CGFloat = legend.count <= 1 ? 5.2 : 4.2
                     let attrs: [NSAttributedString.Key: Any] = [
@@ -1177,7 +1192,8 @@ enum CatRenderer {
             endWidth: 12.0,
             outlineOnLeftSide: true,
             outlineAlpha: 0.85 * physics.hindFootActive.value,
-            coat: coat
+            coat: coat,
+            isHindLeg: true
         )
     }
 
@@ -1283,6 +1299,8 @@ enum CatRenderer {
         nose.addCurve(to: p(-3.8, 13, 34), control1: p(-1.2, 16.3, 35), control2: p(-3.8, 14.2, 34))
         nose.closeSubpath()
         ctx.setFillColor(rgb(0x0D0D0F).cgColor); ctx.addPath(nose); ctx.fillPath()
+        ctx.setStrokeColor(rgb(0x101012).cgColor); ctx.setLineWidth(0.7)
+        ctx.move(to: p(0, 16.3, 35)); ctx.addLine(to: p(0.5, 22)); ctx.strokePath()
     }
 
     private static func drawHeadphones(in ctx: CGContext, fit: CGFloat, eye: EyeColorTheme) {
@@ -1406,8 +1424,9 @@ enum CatRenderer {
         ctx.rotate(by: sign * (0.06 * (1.0 - hunt * 0.6)))
 
         // Eyes grow rounder & slightly larger in full hunting focus!
-        let rx: CGFloat = (coat == .orcaCat ? 10.6 : 12) + hunt * 1.1
-        let ry: CGFloat = (coat == .orcaCat ? 10.0 : 10.8) + hunt * 1.8
+        // Same eye size for every coat, matching the Windows renderer.
+        let rx: CGFloat = 12 + hunt * 1.1
+        let ry: CGFloat = 10.8 + hunt * 1.8
         let eyeRect = CGRect(x: -rx, y: -ry, width: rx * 2, height: ry * 2)
 
         // Clip to the visible opening before painting any iris/pupil pixels.
@@ -1687,7 +1706,8 @@ enum CatRenderer {
         outlineOnLeftSide: Bool,
         outlineAlpha: CGFloat,
         coat: CatCoatTheme,
-        chestFur: CGFloat = 1
+        chestFur: CGFloat = 1,
+        isHindLeg: Bool = false
     ) {
         let steps = 14
         var leftEdge: [CGPoint] = []
@@ -1721,15 +1741,33 @@ enum CatRenderer {
 
         ctx.saveGState()
         if coat == .orcaCat {
-            drawOrcaShoulder(in: ctx, path: limbPath, start: start, end: end, strength: chestFur)
+            // Matches the Windows renderer: forelegs carry the white shoulder, the hind leg is solid
+            // black, and only the paw itself is white.
+            if isHindLeg {
+                ctx.setFillColor(limbColor(coat).cgColor); ctx.addPath(limbPath); ctx.fillPath()
+            } else {
+                drawOrcaShoulder(in: ctx, path: limbPath, start: start, end: end, strength: chestFur)
+            }
             let cuff = CGMutablePath()
-            let first = 11
+            let first = steps - 1
             cuff.move(to: leftEdge[first])
             for pt in leftEdge.dropFirst(first + 1) { cuff.addLine(to: pt) }
             for pt in rightEdge.dropFirst(first).reversed() { cuff.addLine(to: pt) }
             cuff.closeSubpath()
             ctx.setFillColor(pawColor(coat).cgColor); ctx.addPath(cuff); ctx.fillPath()
             ctx.fillEllipse(in: pawRect)
+            // Shade the free edge of the white paw, leaving the wrist continuous.
+            let direction = quadTangent(start, control, end, t: 1)
+            let angle = atan2(direction.y, direction.x)
+            let rim = pawRect.insetBy(dx: 0.725, dy: 0.725)
+            let arc = CGMutablePath()
+            arc.addRelativeArc(center: .zero, radius: 1, startAngle: angle - 100 * .pi / 180, delta: 200 * .pi / 180,
+                               transform: CGAffineTransform(translationX: rim.midX, y: rim.midY)
+                                   .scaledBy(x: rim.width / 2, y: rim.height / 2))
+            ctx.saveGState()
+            ctx.setStrokeColor(rgb(0x68666E).cgColor); ctx.setLineWidth(1.45); ctx.setLineCap(.round)
+            ctx.addPath(arc); ctx.strokePath()
+            ctx.restoreGState()
         } else if coat != .siamese {
             ctx.setFillColor(limbColor(coat).cgColor)
             ctx.addPath(limbPath)
@@ -1809,6 +1847,8 @@ enum CatRenderer {
         ctx.restoreGState()
     }
 
+    private static let orcaLegFeather: CGFloat = 1.5
+
     private static func drawOrcaShoulder(in ctx: CGContext, path: CGPath, start: CGPoint, end: CGPoint, strength: CGFloat) {
         let length = max(1, hypot(end.x - start.x, end.y - start.y))
         let dx = (end.x - start.x) / length, dy = (end.y - start.y) / length
@@ -1817,12 +1857,14 @@ enum CatRenderer {
         let fade = min(34, length * 0.52)
         let fur = pawColor(.orcaCat)
         let shoulder = catBlack.blended(withFraction: strength, of: fur) ?? fur
-        let gray = catBlack.blended(withFraction: strength, of: rgb(0x939297)) ?? catBlack
-        let dark = catBlack.blended(withFraction: strength, of: rgb(0x38373B)) ?? catBlack
         let clear = shoulder.withAlphaComponent(0)
-        let colors = [clear, clear, shoulder, gray, dark, catBlack, catBlack].map { $0.cgColor } as CFArray
-        let stops: [CGFloat] = [0, (pad - 3) / span, (pad + fade * 0.22) / span, (pad + fade * 0.5) / span,
-                               (pad + fade * 0.78) / span, (pad + fade) / span, 1]
+        // Tuxedo fur changes from white to black at a crisp edge. A long grey ramp here read as a
+        // smudge across the chest, so the white shoulder meets the black leg within a few pixels.
+        let edge = pad + fade * 0.5
+        let feather = min(orcaLegFeather, fade * 0.25)
+        let colors = [clear, clear, shoulder, shoulder, catBlack, catBlack].map { $0.cgColor } as CFArray
+        let stops: [CGFloat] = [0, (pad - 3) / span, (pad + fade * 0.22) / span,
+                               (edge - feather) / span, (edge + feather) / span, 1]
         guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: stops) else { return }
         ctx.saveGState(); ctx.addPath(path); ctx.clip()
         ctx.drawLinearGradient(gradient, start: CGPoint(x: start.x - dx * pad, y: start.y - dy * pad),
