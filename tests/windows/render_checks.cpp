@@ -63,16 +63,24 @@ static std::vector<BYTE> renderFrame(const CatPhysics& physics, const CatSetting
     return canvas.pixels;
 }
 
-static void orcaLegHasCrispEdge() {
-    // One straight foreleg, shoulder at the top, paw at the bottom, on a transparent canvas.
+static void orcaLegHasSoftSlantedEdge() {
+    // One straight left foreleg (body centre to its right), shoulder at the top, paw at the bottom.
     Canvas canvas(40, 120);
     {
         Gdiplus::Graphics g(&canvas.bitmap);
         g.Clear(Gdiplus::Color(0, 0, 0, 0));
         Gdiplus::GraphicsPath leg;
         leg.AddRectangle(Gdiplus::RectF(12.5f, 10.0f, 15.0f, 100.0f));
-        CatRenderer::fillOrcaForeleg(g, leg, {20.0f, 10.0f}, {20.0f, 110.0f});
+        CatRenderer::fillOrcaForeleg(g, leg, {20.0f, 10.0f}, {20.0f, 110.0f}, 1.0f);
     }
+    // First row in a column where the fur has turned black.
+    auto blackFrom = [&](int x) {
+        for (int y = 10; y < 110; ++y) {
+            const BYTE* p = canvas.at(x, y);
+            if (p[3] >= 250 && (p[0] + p[1] + p[2]) / 3 < 40) return y;
+        }
+        return 110;
+    };
     int grey = 0, white = 0, black = 0;
     for (int y = 10; y < 110; ++y) {
         const BYTE* p = canvas.at(20, y);
@@ -82,9 +90,13 @@ static void orcaLegHasCrispEdge() {
         else if (luma < 40) ++black;
         else ++grey;
     }
-    std::printf("orca leg: %d white, %d grey, %d black rows\n", white, grey, black);
+    int outer = blackFrom(14), inner = blackFrom(26);
+    std::printf("orca leg: %d white, %d grey, %d black rows; black from row %d outer, %d inner\n",
+                white, grey, black, outer, inner);
     CHECK(white > 3 && black > 40, "Orca foreleg should show a white shoulder and a black leg");
-    CHECK(grey <= 4, "Orca foreleg white-to-black edge should be crisp, not a long grey ramp");
+    CHECK(grey >= 2, "Orca foreleg white-to-black edge should be slightly soft");
+    CHECK(grey <= 10, "Orca foreleg white-to-black edge should stay short, not a long grey ramp");
+    CHECK(inner - outer >= 6, "Orca foreleg edge should slant down toward the chest");
 }
 
 static void legendsOnlyOnGlowingKeys() {
@@ -168,7 +180,7 @@ int main() {
         std::printf("FAIL: GDI+ did not start\n");
         return 1;
     }
-    orcaLegHasCrispEdge();
+    orcaLegHasSoftSlantedEdge();
     legendsOnlyOnGlowingKeys();
     controlBarLayout();
     fontsAreCached();

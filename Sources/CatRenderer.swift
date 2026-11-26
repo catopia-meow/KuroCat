@@ -1667,7 +1667,7 @@ enum CatRenderer {
         if coat == .orcaCat {
             let leg = CGRect(x: bottom.x - 7.5, y: top.y, width: 15, height: bottom.y - top.y)
             let path = CGPath(roundedRect: leg, cornerWidth: 7.5, cornerHeight: 7.5, transform: nil)
-            drawOrcaShoulder(in: ctx, path: path, start: top, end: bottom, strength: 1)
+            drawOrcaShoulder(in: ctx, path: path, start: top, end: bottom, innerSide: isLeft ? 1 : -1, strength: 1)
             fillRounded(in: ctx, CGRect(x: bottom.x - 7.5, y: bottom.y - 9, width: 15, height: 14), radius: 5, color: pawColor(coat))
         } else if patterned(coat) {
             ctx.setFillColor(pawColor(coat).cgColor)
@@ -1747,7 +1747,9 @@ enum CatRenderer {
             if isHindLeg {
                 ctx.setFillColor(limbColor(coat).cgColor); ctx.addPath(limbPath); ctx.fillPath()
             } else {
-                drawOrcaShoulder(in: ctx, path: limbPath, start: start, end: end, strength: chestFur)
+                // Only the left foreleg is drawn with its crease outline on the right-hand side.
+                drawOrcaShoulder(in: ctx, path: limbPath, start: start, end: end,
+                                 innerSide: outlineOnLeftSide ? -1 : 1, strength: chestFur)
             }
             let cuff = CGMutablePath()
             let first = steps - 1
@@ -1853,9 +1855,14 @@ enum CatRenderer {
         ctx.restoreGState()
     }
 
-    private static let orcaLegFeather: CGFloat = 1.5
+    // The white bib reaches down the inner edge of each foreleg, so the white-to-black edge runs on a
+    // slant (higher on the outer side, lower toward the chest) with a short soft blend.
+    private static let orcaLegFeather: CGFloat = 4.0
+    private static let orcaLegSlant: CGFloat = 0.85
 
-    private static func drawOrcaShoulder(in ctx: CGContext, path: CGPath, start: CGPoint, end: CGPoint, strength: CGFloat) {
+    /// `innerSide` is +1 when the body's centre lies to the right of this leg, -1 when to the left.
+    private static func drawOrcaShoulder(in ctx: CGContext, path: CGPath, start: CGPoint, end: CGPoint,
+                                         innerSide: CGFloat, strength: CGFloat) {
         let length = max(1, hypot(end.x - start.x, end.y - start.y))
         let dx = (end.x - start.x) / length, dy = (end.y - start.y) / length
         let pad: CGFloat = 16
@@ -1864,17 +1871,36 @@ enum CatRenderer {
         let fur = pawColor(.orcaCat)
         let shoulder = catBlack.blended(withFraction: strength, of: fur) ?? fur
         let clear = shoulder.withAlphaComponent(0)
-        // Tuxedo fur changes from white to black at a crisp edge. A long grey ramp here read as a
-        // smudge across the chest, so the white shoulder meets the black leg within a few pixels.
-        let edge = pad + fade * 0.5
-        let feather = min(orcaLegFeather, fade * 0.25)
-        let colors = [clear, clear, shoulder, shoulder, catBlack, catBlack].map { $0.cgColor } as CFArray
-        let stops: [CGFloat] = [0, (pad - 3) / span, (pad + fade * 0.22) / span,
-                               (edge - feather) / span, (edge + feather) / span, 1]
-        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: stops) else { return }
+        let space = CGColorSpaceCreateDeviceRGB()
         ctx.saveGState(); ctx.addPath(path); ctx.clip()
-        ctx.drawLinearGradient(gradient, start: CGPoint(x: start.x - dx * pad, y: start.y - dy * pad),
-                               end: CGPoint(x: end.x + dx * pad, y: end.y + dy * pad), options: [])
+
+        // White layer: fades in from the chest along the leg and stays white to the paw.
+        let whiteColors = [clear, clear, shoulder, shoulder].map { $0.cgColor } as CFArray
+        let whiteStops: [CGFloat] = [0, (pad - 3) / span, (pad + fade * 0.22) / span, 1]
+        if let gradient = CGGradient(colorsSpace: space, colors: whiteColors, locations: whiteStops) {
+            ctx.drawLinearGradient(gradient, start: CGPoint(x: start.x - dx * pad, y: start.y - dy * pad),
+                                   end: CGPoint(x: end.x + dx * pad, y: end.y + dy * pad),
+                                   options: [.drawsAfterEndLocation])
+        }
+
+        // Black layer: its gradient axis leans toward the chest, which tilts the edge across the leg.
+        let nx = -dy, ny = dx
+        let lean = -dy * innerSide * orcaLegSlant
+        var gx = dx - lean * nx, gy = dy - lean * ny
+        let gl = max(0.001, hypot(gx, gy))
+        gx /= gl; gy /= gl
+        let along = dx * gx + dy * gy
+        let edge = pad + fade * 0.5 * along
+        let total = pad + length * along + pad * 2
+        let feather = min(orcaLegFeather, fade * 0.25)
+        let clearBlack = catBlack.withAlphaComponent(0)
+        let darkColors = [clearBlack, clearBlack, catBlack, catBlack].map { $0.cgColor } as CFArray
+        let darkStops: [CGFloat] = [0, (edge - feather) / total, (edge + feather) / total, 1]
+        if let gradient = CGGradient(colorsSpace: space, colors: darkColors, locations: darkStops) {
+            ctx.drawLinearGradient(gradient, start: CGPoint(x: start.x - gx * pad, y: start.y - gy * pad),
+                                   end: CGPoint(x: start.x + gx * (total - pad), y: start.y + gy * (total - pad)),
+                                   options: [.drawsAfterEndLocation])
+        }
         ctx.restoreGState()
     }
 
