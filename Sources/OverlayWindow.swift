@@ -4,6 +4,27 @@ import AppKit
 private let captureGreen = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: 1)
 
 final class CatCanvasView: NSView {
+
+    // Scroll or pinch over the cat to resize it (same 0.5x to 2x range as the size menu).
+    private var zoomAllowed: Bool {
+        !CatSettings.shared.fullClickThrough || NSEvent.modifierFlags.contains(.option)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard zoomAllowed, event.momentumPhase.isEmpty else { return }
+        let raw = event.scrollingDeltaY
+        guard abs(raw) > 0.01 else { return }
+        // Trackpads report many small precise deltas; mouse wheels report whole notches.
+        let delta = event.hasPreciseScrollingDeltas ? max(-0.18, min(0.18, raw * 0.0045))
+                                                    : max(-0.25, min(0.25, raw * 0.06))
+        (window as? OverlayWindow)?.applyScale(CatSettings.shared.scale * (1 + delta))
+    }
+
+    override func magnify(with event: NSEvent) {
+        guard zoomAllowed else { return }
+        let factor = max(0.5, min(1.5, 1 + event.magnification))
+        (window as? OverlayWindow)?.applyScale(CatSettings.shared.scale * factor)
+    }
     private enum ClickTarget: Equatable {
         case bowl, restingHead, restingBody, sulkingCat, dopeyCat
     }
@@ -346,7 +367,11 @@ final class OverlayWindow: NSPanel {
         }
     }
 
+    static let minScale: CGFloat = 0.5
+    static let maxScale: CGFloat = 2.0
+
     func applyScale(_ newScale: CGFloat) {
+        let newScale = max(Self.minScale, min(Self.maxScale, newScale))
         CatSettings.shared.scale = newScale
         let oldFrame = frame
         let newSize = CGSize(
