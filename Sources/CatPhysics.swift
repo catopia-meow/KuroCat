@@ -266,10 +266,11 @@ final class CatPhysics {
         let direction = abs(dx) >= abs(dy) ? dx : dy
         let distance = hypot(dx, dy)
         let arc = (direction < 0 ? -distance : distance) / Self.eggRadius
+        let before = eggRoll
         if arc * remainingRoll < 0 { remainingRoll = 0 }
         remainingRoll = min(0.85, max(-0.85, remainingRoll + arc * 0.55))
         eggRoll = (eggRoll + arc * 0.45).remainder(dividingBy: 2 * .pi)
-        trailEgg(dx: dx, dy: dy)
+        trailEgg(dx: dx, dy: dy, rollBefore: before)
     }
 
     func coastEgg(dt: CGFloat) {
@@ -280,12 +281,12 @@ final class CatPhysics {
         eggTrail.removeAll { $0.age >= Self.eggTrailLife }
     }
 
-    // Motion trail behind the rolling egg. Samples are where the egg was, in canvas units of
-    // total drag travel; the renderer draws them relative to the egg's current travel.
-    struct EggTrailSample { var travel: CGPoint; var age: CGFloat }
-    static let eggTrailLife: CGFloat = 0.24
-    static let eggTrailSpacing: CGFloat = 9
-    static let eggTrailMax = 40
+    // Afterimages behind the rolling egg. Samples are where (and at what roll) the egg was, in
+    // canvas units of total drag travel; the renderer draws them relative to the egg's travel.
+    struct EggTrailSample { var travel: CGPoint; var roll: CGFloat; var age: CGFloat }
+    static let eggTrailLife: CGFloat = 0.20
+    static let eggTrailSpacing: CGFloat = 26
+    static let eggTrailMax = 6
     var eggTravel = CGPoint.zero
     var eggTrail: [EggTrailSample] = []
 
@@ -294,18 +295,21 @@ final class CatPhysics {
         eggTrail.removeAll()
     }
 
-    func trailEgg(dx: CGFloat, dy: CGFloat) {
+    func trailEgg(dx: CGFloat, dy: CGFloat, rollBefore: CGFloat) {
         let from = eggTravel
         eggTravel = CGPoint(x: eggTravel.x + dx, y: eggTravel.y + dy)
         let last = eggTrail.last?.travel ?? from
+        let lastRoll = eggTrail.last?.roll ?? rollBefore
+        let turn = (eggRoll - lastRoll).remainder(dividingBy: 2 * .pi)
         let gap = hypot(eggTravel.x - last.x, eggTravel.y - last.y)
-        // Fill fast moves with evenly spaced samples so the trail never breaks into separate blobs.
-        let steps = min(12, Int(gap / Self.eggTrailSpacing))
+        // A fast move drops evenly spaced ghosts along the way, each at its own roll.
+        let steps = min(Self.eggTrailMax, Int(gap / Self.eggTrailSpacing))
         if steps > 0 {
             for i in 1...steps {
                 let t = CGFloat(i) / CGFloat(steps)
                 eggTrail.append(EggTrailSample(travel: CGPoint(x: last.x + (eggTravel.x - last.x) * t,
-                                                               y: last.y + (eggTravel.y - last.y) * t), age: 0))
+                                                               y: last.y + (eggTravel.y - last.y) * t),
+                                               roll: lastRoll + turn * t, age: 0))
             }
         }
         if eggTrail.count > Self.eggTrailMax { eggTrail.removeFirst(eggTrail.count - Self.eggTrailMax) }

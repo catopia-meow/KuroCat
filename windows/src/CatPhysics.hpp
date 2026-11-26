@@ -222,10 +222,11 @@ public:
         // Roll by arc length. Diagonal motion follows the dominant screen axis.
         const float direction = std::abs(dx) >= std::abs(dy) ? dx : dy;
         const float arc = std::copysign(std::hypot(dx, dy), direction) / EggRadius;
+        const float before = eggRoll;
         if (arc * remainingRoll < 0) remainingRoll = 0;
         remainingRoll = std::clamp(remainingRoll + arc * 0.55f, -0.85f, 0.85f);
         eggRoll = std::remainder(eggRoll + arc * 0.45f, 6.2831853f);
-        trailEgg(dx, dy);
+        trailEgg(dx, dy, before);
     }
     void coastEgg(float dt) {
         const float next = remainingRoll * std::exp(-dt * 7.5f);
@@ -237,28 +238,31 @@ public:
                        eggTrail.end());
     }
 
-    // Motion trail behind the rolling egg. Samples are where the egg was, in canvas units of
-    // total drag travel; the renderer draws them relative to the egg's current travel.
-    struct EggTrailSample { Pt travel; float age; };
-    static constexpr float EggTrailLife = 0.24f;
-    static constexpr float EggTrailSpacing = 9.0f;
-    static constexpr size_t EggTrailMax = 40;
+    // Afterimages behind the rolling egg. Samples are where (and at what roll) the egg was, in
+    // canvas units of total drag travel; the renderer draws them relative to the egg's travel.
+    struct EggTrailSample { Pt travel; float roll; float age; };
+    static constexpr float EggTrailLife = 0.20f;
+    static constexpr float EggTrailSpacing = 26.0f;
+    static constexpr size_t EggTrailMax = 6;
     Pt eggTravel{0.0f, 0.0f};
     std::vector<EggTrailSample> eggTrail;
     void resetEggTrail() {
         eggTravel = {0.0f, 0.0f};
         eggTrail.clear();
     }
-    void trailEgg(float dx, float dy) {
+    void trailEgg(float dx, float dy, float rollBefore) {
         const Pt from = eggTravel;
         eggTravel = {eggTravel.x + dx, eggTravel.y + dy};
         const Pt last = eggTrail.empty() ? from : eggTrail.back().travel;
+        const float lastRoll = eggTrail.empty() ? rollBefore : eggTrail.back().roll;
+        const float turn = std::remainder(eggRoll - lastRoll, 6.2831853f);
         const float gap = std::hypot(eggTravel.x - last.x, eggTravel.y - last.y);
-        // Fill fast moves with evenly spaced samples so the trail never breaks into separate blobs.
-        const int steps = std::min(12, (int)(gap / EggTrailSpacing));
+        // A fast move drops evenly spaced ghosts along the way, each at its own roll.
+        const int steps = std::min((int)EggTrailMax, (int)(gap / EggTrailSpacing));
         for (int i = 1; i <= steps; ++i) {
             const float t = (float)i / (float)steps;
-            eggTrail.push_back({{last.x + (eggTravel.x - last.x) * t, last.y + (eggTravel.y - last.y) * t}, 0.0f});
+            eggTrail.push_back({{last.x + (eggTravel.x - last.x) * t, last.y + (eggTravel.y - last.y) * t},
+                                lastRoll + turn * t, 0.0f});
         }
         if (eggTrail.size() > EggTrailMax) eggTrail.erase(eggTrail.begin(), eggTrail.end() - EggTrailMax);
     }
