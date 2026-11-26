@@ -241,6 +241,7 @@ final class CatCanvasView: NSView {
         lastDragCursor = screenPt
         physics.eggRoll = 0
         physics.remainingRoll = 0
+        physics.resetEggTrail()
     }
 
     override func mouseDragged(with event: NSEvent) {

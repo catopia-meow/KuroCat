@@ -145,6 +145,22 @@ static void everyCoatDraws() {
     }
 }
 
+static void eggTrailFollowsAndFades() {
+    CatPhysics physics;
+    physics.resetEggTrail();
+    for (int i = 0; i < 6; ++i) {
+        physics.rollEgg(30.0f, 0.0f);
+        physics.coastEgg(1.0f / 60.0f);
+    }
+    CHECK(!physics.eggTrail.empty(), "Rolling the egg should leave a trail");
+    bool behind = true;
+    for (const auto& s : physics.eggTrail) behind = behind && s.travel.x <= physics.eggTravel.x;
+    CHECK(behind, "The egg trail should stay behind the direction of travel");
+    CHECK(physics.eggTrail.size() <= CatPhysics::EggTrailMax, "The egg trail should stay bounded");
+    for (int i = 0; i < 30; ++i) physics.coastEgg(1.0f / 60.0f);
+    CHECK(physics.eggTrail.empty(), "The egg trail should fade out once the drag stops moving");
+}
+
 int main() {
     Gdiplus::GdiplusStartupInput input;
     ULONG_PTR token = 0;
@@ -157,6 +173,7 @@ int main() {
     controlBarLayout();
     fontsAreCached();
     everyCoatDraws();
+    eggTrailFollowsAndFades();
     // Cached fonts are intentionally never freed, so shutting GDI+ down here is safe.
     Gdiplus::GdiplusShutdown(token);
     if (failures) {

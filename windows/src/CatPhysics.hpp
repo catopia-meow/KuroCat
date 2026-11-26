@@ -225,11 +225,42 @@ public:
         if (arc * remainingRoll < 0) remainingRoll = 0;
         remainingRoll = std::clamp(remainingRoll + arc * 0.55f, -0.85f, 0.85f);
         eggRoll = std::remainder(eggRoll + arc * 0.45f, 6.2831853f);
+        trailEgg(dx, dy);
     }
     void coastEgg(float dt) {
         const float next = remainingRoll * std::exp(-dt * 7.5f);
         eggRoll = std::remainder(eggRoll + remainingRoll - next, 6.2831853f);
         remainingRoll = next;
+        for (auto& sample : eggTrail) sample.age += dt;
+        eggTrail.erase(std::remove_if(eggTrail.begin(), eggTrail.end(),
+                                      [](const EggTrailSample& s) { return s.age >= EggTrailLife; }),
+                       eggTrail.end());
+    }
+
+    // Motion trail behind the rolling egg. Samples are where the egg was, in canvas units of
+    // total drag travel; the renderer draws them relative to the egg's current travel.
+    struct EggTrailSample { Pt travel; float age; };
+    static constexpr float EggTrailLife = 0.24f;
+    static constexpr float EggTrailSpacing = 9.0f;
+    static constexpr size_t EggTrailMax = 40;
+    Pt eggTravel{0.0f, 0.0f};
+    std::vector<EggTrailSample> eggTrail;
+    void resetEggTrail() {
+        eggTravel = {0.0f, 0.0f};
+        eggTrail.clear();
+    }
+    void trailEgg(float dx, float dy) {
+        const Pt from = eggTravel;
+        eggTravel = {eggTravel.x + dx, eggTravel.y + dy};
+        const Pt last = eggTrail.empty() ? from : eggTrail.back().travel;
+        const float gap = std::hypot(eggTravel.x - last.x, eggTravel.y - last.y);
+        // Fill fast moves with evenly spaced samples so the trail never breaks into separate blobs.
+        const int steps = std::min(12, (int)(gap / EggTrailSpacing));
+        for (int i = 1; i <= steps; ++i) {
+            const float t = (float)i / (float)steps;
+            eggTrail.push_back({{last.x + (eggTravel.x - last.x) * t, last.y + (eggTravel.y - last.y) * t}, 0.0f});
+        }
+        if (eggTrail.size() > EggTrailMax) eggTrail.erase(eggTrail.begin(), eggTrail.end() - EggTrailMax);
     }
     Spring1D headYaw{0.0f};
     Spring1D headPitch{0.0f};

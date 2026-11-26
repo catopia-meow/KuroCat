@@ -143,6 +143,7 @@ enum CatRenderer {
         let settings = CatSettings.shared
         let coat = settings.coatTheme
         if coat == .dopeyCat && dragging {
+            DopeyArt.eggTrail(ctx, CatPhysics.seatAnchor.x, 155, physics)
             DopeyArt.egg(ctx, CatPhysics.seatAnchor.x, 155, physics.eggRoll)
             ctx.restoreGState()
             return

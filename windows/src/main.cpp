@@ -1255,6 +1255,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 app->lastDragCursor = app->dragStartCursor;
                 app->physics.eggRoll = 0;
                 app->physics.remainingRoll = 0;
+                app->physics.resetEggTrail();
                 RECT wr = {};
                 GetWindowRect(hwnd, &wr);
                 app->dragStartWinOrigin = { wr.left, wr.top };

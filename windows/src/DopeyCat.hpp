@@ -72,6 +72,24 @@ inline void head(Gdiplus::Graphics& g, bool offended = false) {
     face(g,offended);
 }
 
+// Soft blue afterimages where the egg just rolled, oldest (faintest, smallest) first.
+inline void eggTrail(Gdiplus::Graphics& g, float x, float y, const CatPhysics& p) {
+    using namespace Gdiplus;
+    constexpr float r = CatPhysics::EggRadius;
+    for (const auto& s : p.eggTrail) {
+        const float ox = s.travel.x - p.eggTravel.x, oy = s.travel.y - p.eggTravel.y;
+        const float d = std::hypot(ox, oy);
+        if (d < 4.0f) continue;
+        const float t = std::clamp(s.age / CatPhysics::EggTrailLife, 0.0f, 1.0f);
+        const float fade = (1 - t) * (1 - t);
+        // Nearer samples hide behind the egg, so they can be stronger without forming a solid slab.
+        const float alpha = 0.20f * fade * std::min(1.0f, d / (1.2f * r));
+        const float rad = r * (0.92f - 0.42f * t);
+        SolidBrush ghost(Color((BYTE)std::lround(255 * alpha), 120, 142, 206));
+        g.FillEllipse(&ghost, x + ox - rad, y + oy - rad, 2 * rad, 2 * rad);
+    }
+}
+
 inline void egg(Gdiplus::Graphics& g, float x, float y, float angle) {
     using namespace Gdiplus;
     auto state = g.Save();

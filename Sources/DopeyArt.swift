@@ -65,6 +65,23 @@ enum DopeyArt {
         0.56, 0.64, 0.87, 1, 0.25, 0.32, 0.55, 1
     ], locations: [0, 1], count: 2)!
 
+    /// Soft blue afterimages where the egg just rolled, oldest (faintest, smallest) first.
+    static func eggTrail(_ ctx: CGContext, _ x: CGFloat, _ y: CGFloat, _ p: CatPhysics) {
+        let r = CatPhysics.eggRadius
+        for s in p.eggTrail {
+            let ox = s.travel.x - p.eggTravel.x, oy = s.travel.y - p.eggTravel.y
+            let d = hypot(ox, oy)
+            if d < 4 { continue }
+            let t = min(1, max(0, s.age / CatPhysics.eggTrailLife))
+            let fade = (1 - t) * (1 - t)
+            // Nearer samples hide behind the egg, so they can be stronger without forming a solid slab.
+            let alpha = 0.20 * fade * min(1, d / (1.2 * r))
+            let rad = r * (0.92 - 0.42 * t)
+            ctx.setFillColor(CGColor(srgbRed: 120/255, green: 142/255, blue: 206/255, alpha: alpha))
+            ctx.fillEllipse(in: CGRect(x: x + ox - rad, y: y + oy - rad, width: 2 * rad, height: 2 * rad))
+        }
+    }
+
     static func egg(_ ctx: CGContext, _ x: CGFloat, _ y: CGFloat, _ angle: CGFloat) {
         ctx.saveGState()
         ctx.translateBy(x: x, y: y)
