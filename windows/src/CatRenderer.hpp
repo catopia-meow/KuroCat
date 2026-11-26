@@ -1749,7 +1749,12 @@ private:
 
         if (coat != CatCoatTheme::Siamese) {
             SolidBrush b(limbColor(coat));
-            if (patterned(coat)) {
+            if (patterned(coat) && limb != Limb::HindLeg) {
+                // Bicolor cats sit with white forelegs, so a reaching foreleg stays white too
+                // instead of turning grey or orange the moment the cat starts typing.
+                SolidBrush white(pawColor(coat));
+                g.FillPath(&white,&limbPath);
+            } else if (patterned(coat)) {
                 LinearGradientBrush gradient(PointF(start.x,start.y),PointF(end.x,end.y),pawColor(coat),limbColor(coat));
                 gradient.SetWrapMode(WrapModeTileFlipXY);
                 Color colors[3]={pawColor(coat),limbColor(coat),limbColor(coat)};

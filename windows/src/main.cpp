@@ -18,6 +18,7 @@
 #include "CatRenderer.hpp"
 #include "DeskMode.hpp"
 #include "AudioBeat.hpp"
+#include "Stats.hpp"
 #include <SachiVersion.h>
 
 #pragma comment(lib, "user32.lib")
@@ -39,6 +40,9 @@ constexpr double FRAME_INTERVAL = 1.0 / 60.0;          // while typing, moving t
 constexpr double IDLE_FRAME_INTERVAL = 1.0 / 30.0;     // awake but nobody is using the computer
 constexpr double SLEEPING_FRAME_INTERVAL = 1.0 / 15.0; // asleep: only slow breathing and floating z's
 constexpr double ACTIVE_INPUT_WINDOW = 2.0;            // seconds of full frame rate after the last input
+constexpr float WHEEL_ZOOM_STEP = 0.06f;               // size change per mouse-wheel notch over the cat
+constexpr float MIN_SCALE = 0.5f;                      // matches the range CatSettings loads
+constexpr float MAX_SCALE = 2.0f;
 constexpr INT_PTR INSTANCE_VERSION = SACHICAT_INSTANCE_VERSION;
 constexpr wchar_t ORCA_RELEASE_PAGE[] = L"https://github.com/catopia-meow/SachiCat/releases";
 constexpr UINT WM_TRAYICON = WM_APP + 1;
@@ -142,6 +146,11 @@ struct AppState {
 
     int observedMealHour = 0;
     int pendingMeals = 0;
+
+    // Keystroke and petting counts, saved a few seconds after they change and on exit.
+    std::wstring statsDay;
+    stats::Snapshot savedStats;
+    double nextStatsSave = 0.0;
 
     // Robustness against games, Win+L, sleep and display changes
     double nextFrameTime = 0.0;
@@ -434,10 +443,26 @@ bool hourlyMealDue(const SYSTEMTIME& local, int& observedHour) {
 }
 
 /// Once per second: meals, watchdog and game helpers.
+void syncStats(AppState& app, bool force) {
+    const std::wstring day = stats::today();
+    if (day != app.statsDay) {
+        // Midnight passed: today's keystrokes start again. Petting is a lifetime count.
+        app.statsDay = day;
+        app.input.totalKeystrokesToday = 0;
+    }
+    stats::Snapshot current{day, app.input.totalKeystrokesToday, app.physics.totalPetSessions};
+    if (current != app.savedStats && (force || nowSeconds() >= app.nextStatsSave)) {
+        stats::save(current);
+        app.savedStats = current;
+        app.nextStatsSave = nowSeconds() + 5.0;
+    }
+}
+
 void housekeeping(AppState& app) {
     double now = nowSeconds();
     if (now < app.nextHousekeepingTime) return;
     app.nextHousekeepingTime = now + 1.0;
+    syncStats(app, false);
     if (!app.hwnd) return;
     SYSTEMTIME local{};
     GetLocalTime(&local);
@@ -1238,6 +1263,19 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_MOUSEWHEEL:
+            // Scroll over the cat to resize it (same 0.5x to 2x range as the size menu).
+            if (app && hwnd == app->hwnd && mouseIsUnlocked(*app)) {
+                const float notches = (float)GET_WHEEL_DELTA_WPARAM(wParam) / (float)WHEEL_DELTA;
+                if (notches != 0.0f) {
+                    const float factor = 1.0f + std::clamp(notches * WHEEL_ZOOM_STEP, -0.25f, 0.25f);
+                    app->settings.scale = std::clamp(app->settings.scale * factor, MIN_SCALE, MAX_SCALE);
+                    applyWindowScaleAndPosition(*app, true);
+                }
+                return 0;
+            }
+            break;
+
         case WM_MOUSEMOVE:
             if (app && app->petPressed) {
                 POINT cur = {};
@@ -1375,6 +1413,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
 
+        case WM_ENDSESSION:
+            // Windows is signing out or shutting down and may end the process without returning
+            // to the message loop, so save the counts now.
+            if (wParam && app && hwnd == app->hwnd) syncStats(*app, true);
+            return 0;
+
         case WM_DESTROY:
             if (hwnd == (app ? app->hwnd : nullptr)) {
                 KillTimer(hwnd, TIMER_RENDER);
@@ -1482,6 +1526,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     AppState app;
     g_app = &app;
     app.settings.loadFromRegistry();
+    app.savedStats = stats::load();
+    app.statsDay = app.savedStats.day;
+    app.input.totalKeystrokesToday = app.savedStats.todayKeys;
+    app.physics.totalPetSessions = app.savedStats.petCount;
     app.deskMonitor = desk::start();
     app.deskMonitor->enabled = app.settings.autoDeskMode;
     app.isElevated = isCurrentProcessElevated();
@@ -1648,6 +1696,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         housekeeping(app);
     }
 
+    syncStats(app, true);
     app.deskMonitor->shutdown();
     DopeyArt::release();
     g_app = nullptr;

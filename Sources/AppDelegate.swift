@@ -14,7 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let deskDetection = DeskDetection()
     private var nextDeskCheck: CFTimeInterval = 0
     private var nextClockCheck: CFTimeInterval = 0
-    private var nextFrameTime: CFTimeInterval = 0
+    private var renderRunning = true
     private var automaticTablet = false
     private var showAudioFailure = false
     private var isHandingOverToNewerCopy = false
@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.observedKeyActivity = InputEngine.shared.lastKeyActivityTime
                 physics.resumeFromInput(self.observedKeyActivity)
                 physics.triggerKeyDown(key)
+                self.wakeRenderLoopToActive()
             }
         }
         engine.onMouseClick = { [weak self] button, isDown in
@@ -77,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     view.physics.resumeFromInput(InputEngine.shared.lastMouseClickTime)
                 }
                 view.physics.triggerMouseClick(button: button, isDown: isDown)
+                self.wakeRenderLoopToActive()
             }
         }
         engine.start()
@@ -142,51 +144,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return dict["CFBundleShortVersionString"] as? String
     }
 
-    // MARK: - 60 FPS Render Loop
+    // MARK: - Adaptive Render Loop
 
+    /// The timer's own interval follows the frame cadence (60 / 30 / 15 fps), so an idle or sleeping
+    /// cat does not wake the CPU 60 times a second just to skip frames. A tolerance lets macOS
+    /// coalesce our wake-ups with other timers. While the display or the Mac sleeps the loop stops.
     private func startRenderLoop() {
         lastFrameTime = CACurrentMediaTime()
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            guard let self, self.isPetVisible else { return }
-            let now = CACurrentMediaTime()
-            let view = self.overlayWindow.catView
-            let physics = view.physics
-            let engine = InputEngine.shared
-            // Adaptive frame pacing, same as Windows and Linux: full 60fps only while something
-            // is happening, so an untouched cat does not keep redrawing 60 times a second.
-            guard now >= self.nextFrameTime - 0.002 else { return }
-            self.nextFrameTime = now + self.frameInterval(now: now, physics: physics, engine: engine)
-            let dt = CGFloat(now - self.lastFrameTime)
-            self.lastFrameTime = now
-            if now >= self.nextClockCheck {
-                self.nextClockCheck = now + 1
-                physics.observeClock(Date())
-            }
-            if now >= self.nextDeskCheck && CatSettings.shared.deskMode == .automatic {
-                self.nextDeskCheck = now + 0.5
-                self.deskDetection.refresh { [weak self] tablet in self?.automaticTablet = tablet }
-            }
-            self.updateDeskMode()
-            if physics.listening {
-                (physics.soundPlaying, physics.soundPulse) = self.audio.reading()
-            }
-            view.physics.step(dt: dt, windowFrameInScreen: self.overlayWindow.frame)
-            if view.isDragging && CatSettings.shared.coatTheme == .dopeyCat { physics.coastEgg(dt: dt) }
-            view.updateHoverAndClickThrough()
-            if engine.lastKeyActivityTime > self.observedKeyActivity {
-                self.observedKeyActivity = engine.lastKeyActivityTime
-                physics.resumeFromInput(self.observedKeyActivity)
-            }
-            if engine.lastMouseMoveTime > self.observedMouseActivity {
-                self.observedMouseActivity = engine.lastMouseMoveTime
-                if self.overlayWindow.ignoresMouseEvents {
-                    physics.resumeFromInput(self.observedMouseActivity)
-                }
-            }
-            view.needsDisplay = true
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification] {
+            center.addObserver(self, selector: #selector(pauseRenderLoop), name: name, object: nil)
         }
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
+            center.addObserver(self, selector: #selector(resumeRenderLoop), name: name, object: nil)
+        }
+        scheduleRenderTimer(interval: Self.activeFrameInterval)
+    }
+
+    private func scheduleRenderTimer(interval: CFTimeInterval) {
+        if renderTimer?.isValid == true && renderTimer?.timeInterval == interval { return }
+        renderTimer?.invalidate()
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.renderTick() }
+        timer.tolerance = interval * 0.1
         RunLoop.main.add(timer, forMode: .common)
         renderTimer = timer
+    }
+
+    @objc private func pauseRenderLoop() {
+        renderRunning = false
+        renderTimer?.invalidate()
+        renderTimer = nil
+    }
+
+    @objc private func resumeRenderLoop() {
+        guard !renderRunning else { return }
+        renderRunning = true
+        // Skip the time spent asleep instead of simulating it in one giant step.
+        lastFrameTime = CACurrentMediaTime()
+        scheduleRenderTimer(interval: Self.activeFrameInterval)
+    }
+
+    /// Input arrived: go back to full frame rate right away instead of at the next slow tick.
+    private func wakeRenderLoopToActive() {
+        guard renderRunning, renderTimer?.timeInterval != Self.activeFrameInterval else { return }
+        scheduleRenderTimer(interval: Self.activeFrameInterval)
+    }
+
+    private func renderTick() {
+        guard isPetVisible, renderRunning else { return }
+        let now = CACurrentMediaTime()
+        let view = overlayWindow.catView
+        let physics = view.physics
+        let engine = InputEngine.shared
+        let dt = CGFloat(min(now - lastFrameTime, 0.25))
+        lastFrameTime = now
+        if now >= nextClockCheck {
+            nextClockCheck = now + 1
+            physics.observeClock(Date())
+        }
+        if now >= nextDeskCheck && CatSettings.shared.deskMode == .automatic {
+            nextDeskCheck = now + 0.5
+            deskDetection.refresh { [weak self] tablet in self?.automaticTablet = tablet }
+        }
+        updateDeskMode()
+        if physics.listening {
+            (physics.soundPlaying, physics.soundPulse) = audio.reading()
+        }
+        physics.step(dt: dt, windowFrameInScreen: overlayWindow.frame)
+        if view.isDragging && CatSettings.shared.coatTheme == .dopeyCat { physics.coastEgg(dt: dt) }
+        view.updateHoverAndClickThrough()
+        if engine.lastKeyActivityTime > observedKeyActivity {
+            observedKeyActivity = engine.lastKeyActivityTime
+            physics.resumeFromInput(observedKeyActivity)
+        }
+        if engine.lastMouseMoveTime > observedMouseActivity {
+            observedMouseActivity = engine.lastMouseMoveTime
+            if overlayWindow.ignoresMouseEvents {
+                physics.resumeFromInput(observedMouseActivity)
+            }
+        }
+        view.needsDisplay = true
+        // Same cadence rules as Windows and Linux.
+        scheduleRenderTimer(interval: frameInterval(now: now, physics: physics, engine: engine))
     }
 
     private static let activeFrameInterval: CFTimeInterval = 1.0 / 60.0   // typing, moving the mouse, interacting

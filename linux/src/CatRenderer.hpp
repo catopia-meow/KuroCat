@@ -626,7 +626,7 @@ private:
         Pt hip = { seatX + 26.0f, seatY + 2.0f };
         Pt target = physics.hindFoot.point();
         Pt mid = { (hip.x + target.x) * 0.5f + 10.0f, (hip.y + target.y) * 0.5f - 8.0f };
-        drawLimb(cr, hip, mid, target, 15.0f, 12.0f, true, 0.85f * physics.hindFootActive.value, coat);
+        drawLimb(cr, hip, mid, target, 15.0f, 12.0f, true, 0.85f * physics.hindFootActive.value, coat, true);
     }
 
     // MARK: - 2.5D Eyes & Whiskers
@@ -824,7 +824,7 @@ private:
         cairo_stroke(cr);
     }
 
-    static void drawLimb(cairo_t* cr, Pt start, Pt ctrl, Pt end, float startW, float endW, bool outlineOnLeft, float outlineAlpha, CatCoatTheme coat) {
+    static void drawLimb(cairo_t* cr, Pt start, Pt ctrl, Pt end, float startW, float endW, bool outlineOnLeft, float outlineAlpha, CatCoatTheme coat, bool hindLeg = false) {
         constexpr int steps = 14;
         std::vector<Pt> leftEdge, rightEdge;
         leftEdge.reserve(steps + 1); rightEdge.reserve(steps + 1);
@@ -857,7 +857,12 @@ private:
         if (coat != CatCoatTheme::Siamese) {
             traceLimb();
             setCol(cr, limbColor(coat));
-            if (patterned(coat)) {
+            if (patterned(coat) && !hindLeg) {
+                // Bicolor cats sit with white forelegs, so a reaching foreleg stays white too
+                // instead of turning grey or orange the moment the cat starts typing.
+                setCol(cr, pawColor(coat));
+                cairo_fill(cr);
+            } else if (patterned(coat)) {
                 RGBA milk=pawColor(coat),base=limbColor(coat);
                 cairo_pattern_t* gradient=cairo_pattern_create_linear(start.x,start.y,end.x,end.y);
                 cairo_pattern_add_color_stop_rgb(gradient,0,milk.r,milk.g,milk.b);

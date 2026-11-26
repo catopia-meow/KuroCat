@@ -15,6 +15,7 @@
 #include "InputEngine.hpp"
 #include "CatPhysics.hpp"
 #include "CatRenderer.hpp"
+#include "Stats.hpp"
 
 #include <sys/stat.h>
 #include <sys/file.h>
@@ -776,6 +777,24 @@ static gboolean onFrameTick(gpointer) {
     return G_SOURCE_CONTINUE;
 }
 
+static std::string g_statsDay;
+static stats::Snapshot g_savedStats;
+
+/// Saves today's keystrokes and the petting count when they changed (every few seconds and on exit).
+static void syncStats(LinuxApp& app) {
+    const std::string day = stats::today();
+    if (day != g_statsDay) {
+        // Midnight passed: today's keystrokes start again. Petting is a lifetime count.
+        g_statsDay = day;
+        app.input.totalKeystrokesToday = 0;
+    }
+    stats::Snapshot current{day, app.input.totalKeystrokesToday, app.physics.totalPetSessions};
+    if (current != g_savedStats) {
+        stats::save(current);
+        g_savedStats = current;
+    }
+}
+
 static gboolean onQuitSignal(gpointer) {
     releaseSingleInstance();
     gtk_main_quit();
@@ -828,6 +847,14 @@ int main(int argc, char** argv) {
     }
 
     app.settings.load();
+    g_savedStats = stats::load();
+    g_statsDay = g_savedStats.day;
+    app.input.totalKeystrokesToday = g_savedStats.todayKeys;
+    app.physics.totalPetSessions = g_savedStats.petCount;
+    g_timeout_add_seconds(5, +[](gpointer) -> gboolean {
+        if (g_app) syncStats(*g_app);
+        return G_SOURCE_CONTINUE;
+    }, nullptr);
     if (isAutoStartEnabled()) {
         // Keep Exec path updated if user moved portable kurocat binary
         setAutoStartEnabled(true);
@@ -855,7 +882,20 @@ int main(int argc, char** argv) {
     app.drawArea = gtk_drawing_area_new();
     gtk_container_add(GTK_CONTAINER(app.window), app.drawArea);
 
-    gtk_widget_add_events(app.window, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK | GDK_STRUCTURE_MASK);
+    gtk_widget_add_events(app.window, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK | GDK_STRUCTURE_MASK | GDK_SCROLL_MASK);
+    // Scroll over the cat to resize it (same 0.5x to 2x range as the size menu).
+    g_signal_connect(app.window, "scroll-event", G_CALLBACK(+[](GtkWidget*, GdkEventScroll* event, gpointer) -> gboolean {
+        if (!g_app || g_app->settings.fullClickThrough) return FALSE;
+        double steps = 0.0;
+        if (event->direction == GDK_SCROLL_UP) steps = 1.0;
+        else if (event->direction == GDK_SCROLL_DOWN) steps = -1.0;
+        else if (event->direction == GDK_SCROLL_SMOOTH) steps = -event->delta_y;
+        if (steps == 0.0) return FALSE;
+        float factor = 1.0f + std::clamp((float)steps * 0.06f, -0.25f, 0.25f);
+        g_app->settings.scale = std::clamp(g_app->settings.scale * factor, 0.5f, 2.0f);
+        applyWindowScaleAndPos(*g_app, true);
+        return TRUE;
+    }), nullptr);
     g_signal_connect(app.drawArea, "draw", G_CALLBACK(onDraw), nullptr);
     g_signal_connect(app.window, "button-press-event", G_CALLBACK(onButtonPress), nullptr);
     g_signal_connect(app.window, "motion-notify-event", G_CALLBACK(onMotionNotify), nullptr);
@@ -900,6 +940,7 @@ int main(int argc, char** argv) {
 
     gtk_main();
     app.input.stop();
+    syncStats(app);
     releaseSingleInstance();
     g_app = nullptr;
     return 0;
