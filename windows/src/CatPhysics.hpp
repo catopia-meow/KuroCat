@@ -70,6 +70,8 @@ struct CatSettings {
         return arcadeMode ? DeskMode::Arcade : (autoDeskMode ? DeskMode::Auto : (tabletMode ? DeskMode::Tablet : DeskMode::Keyboard));
     }
 
+    // Settings live under HKCU\Software\KuroCat, the app's former name. Keep the key so existing
+    // users keep their settings after upgrading.
     void loadFromRegistry() {
         HKEY hKey = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\KuroCat", 0, KEY_READ, &hKey) != ERROR_SUCCESS) return;

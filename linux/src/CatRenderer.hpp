@@ -350,7 +350,9 @@ private:
             cairo_set_line_width(cr, 0.65);
             cairo_stroke(cr);
 
-            if (showLegends) {
+            // Legends are only a few pixels tall, so drawing all of them reads as noise. Show a
+            // legend only while its key glows, and fade it in and out with the glow.
+            if (showLegends && glow > 0.05f) {
                 bool isSpace = (cap.key == PhysicalKey::Space);
                 std::string legend = isSpace ? std::string("space") : keycapLegend(cap.key);
                 if (!legend.empty()) {
@@ -364,10 +366,11 @@ private:
                         cx = sp.x;
                         cy = sp.y + dy;
                     }
+                    const double legendAlpha = std::min(1.0, glow * 1.6);
                     if (cap.isAmberAccent || theme != KeyboardTheme::MidnightHacker) {
-                        cairo_set_source_rgba(cr, 0.14, 0.14, 0.16, 0.78);
+                        cairo_set_source_rgba(cr, 0.14, 0.14, 0.16, 0.78 * legendAlpha);
                     } else {
-                        cairo_set_source_rgba(cr, 0.88, 0.90, 0.92, 0.82);
+                        cairo_set_source_rgba(cr, 0.88, 0.90, 0.92, 0.82 * legendAlpha);
                     }
                     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
                     cairo_set_font_size(cr, legend.size() <= 1 ? 5.2 : 3.8);

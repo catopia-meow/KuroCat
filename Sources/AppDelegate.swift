@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let deskDetection = DeskDetection()
     private var nextDeskCheck: CFTimeInterval = 0
     private var nextClockCheck: CFTimeInterval = 0
+    private var nextFrameTime: CFTimeInterval = 0
     private var automaticTablet = false
     private var showAudioFailure = false
     private var isHandingOverToNewerCopy = false
@@ -148,12 +149,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             guard let self, self.isPetVisible else { return }
             let now = CACurrentMediaTime()
-            let dt = CGFloat(now - self.lastFrameTime)
-            self.lastFrameTime = now
-
             let view = self.overlayWindow.catView
             let physics = view.physics
             let engine = InputEngine.shared
+            // Adaptive frame pacing, same as Windows and Linux: full 60fps only while something
+            // is happening, so an untouched cat does not keep redrawing 60 times a second.
+            guard now >= self.nextFrameTime - 0.002 else { return }
+            self.nextFrameTime = now + self.frameInterval(now: now, physics: physics, engine: engine)
+            let dt = CGFloat(now - self.lastFrameTime)
+            self.lastFrameTime = now
             if now >= self.nextClockCheck {
                 self.nextClockCheck = now + 1
                 physics.observeClock(Date())
@@ -183,6 +187,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         renderTimer = timer
+    }
+
+    private static let activeFrameInterval: CFTimeInterval = 1.0 / 60.0   // typing, moving the mouse, interacting
+    private static let idleFrameInterval: CFTimeInterval = 1.0 / 30.0     // awake but nobody is using the computer
+    private static let sleepingFrameInterval: CFTimeInterval = 1.0 / 15.0 // asleep: slow breathing and z's only
+    private static let activeInputWindow: CFTimeInterval = 2.0
+
+    private func frameInterval(now: CFTimeInterval, physics: CatPhysics, engine: InputEngine) -> CFTimeInterval {
+        let view = overlayWindow.catView
+        if view.isDragging || physics.overControl || physics.listening { return Self.activeFrameInterval }
+        if now - max(engine.lastKeyActivityTime, engine.lastMouseMoveTime) < Self.activeInputWindow {
+            return Self.activeFrameInterval
+        }
+        return physics.sleepiness > 0.96 ? Self.sleepingFrameInterval : Self.idleFrameInterval
     }
 
     // MARK: - Menu Bar Icon & Menu
@@ -259,12 +277,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Features
         let rest: PetAction = physics.sleeping ? .wake : .sleep
-        let actions: [PetAction] = [.treat, rest, .doubleClickWake, .music, .mode, .hide]
+        let actions: [PetAction] = [.treat, rest, .doubleClickWake, .music, .hide]
         for action in actions {
             let title: String
             switch action {
             case .music: title = physics.listening ? "停止听音乐" : action.title
-            case .mode: title = "切换模式 · \(settings.deskMode.title)"
             case .hide: title = settings.showControls ? "隐藏控件" : "显示控件"
             default: title = action.title
             }
@@ -275,10 +292,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if action == .doubleClickWake { item.state = settings.doubleClickWake ? .on : .off }
             menu.addItem(item)
         }
-        let arcadeItem = NSMenuItem(title: "街机摇杆模式", action: #selector(selectArcadeMode), keyEquivalent: "")
-        arcadeItem.target = self
-        arcadeItem.state = settings.deskMode == .arcade ? .on : .off
-        menu.addItem(arcadeItem)
+        // Desk modes, listed the same way as the Windows menu.
+        let deskModes: [(String, DeskMode)] = [("自动识别绘画窗口和文字输入", .automatic), ("键鼠模式", .keyboard),
+                                               ("数位板模式", .tablet), ("街机摇杆模式", .arcade)]
+        for (title, mode) in deskModes {
+            let item = NSMenuItem(title: title, action: #selector(selectDeskMode(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = mode.rawValue
+            item.state = settings.deskMode == mode ? .on : .off
+            menu.addItem(item)
+        }
+        if physics.tabletMode {
+            let clearItem = NSMenuItem(title: "清空画板", action: #selector(clearTablet), keyEquivalent: "")
+            clearItem.target = self
+            menu.addItem(clearItem)
+        }
         let captureItem = NSMenuItem(title: "直播采集", action: nil, keyEquivalent: "")
         let captureMenu = NSMenu()
         for (title, selection) in [("透明窗口", 0), ("绿幕窗口（色度键）", 1)] {
@@ -442,12 +470,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func selectArcadeMode() {
+    @objc private func selectDeskMode(_ sender: NSMenuItem) {
+        guard let mode = DeskMode(rawValue: sender.tag) else { return }
         let physics = overlayWindow.catView.physics
         if physics.listening { stopMusic() }
-        CatSettings.shared.deskMode = .arcade
-        if physics.sleeping { physics.wake() }
+        if mode == .arcade && physics.sleeping { physics.wake() }
+        CatSettings.shared.deskMode = mode
         updateDeskMode()
+    }
+
+    @objc private func clearTablet() {
+        overlayWindow.catView.physics.clearTablet()
     }
 
     private func updateDeskMode() {

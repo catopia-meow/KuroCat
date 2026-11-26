@@ -4,13 +4,26 @@
   <a href="README.md">简体中文</a> | <b>English</b>
 </p>
 
-## Orca Cat (虎鲸猫) skin for Windows
+## Orca Cat (虎鲸猫) skin for Windows and macOS
 
-This fork adds Orca Cat (虎鲸猫), a black-and-white tuxedo cat, to the Windows app. A fresh installation starts with Orca Cat. Right-click the cat and open the skin menu to switch between Orca Cat and the original skins.
+This fork adds Orca Cat (虎鲸猫), a black-and-white tuxedo cat. It is in both the Windows and macOS apps, which look and behave the same. A fresh installation starts with Orca Cat. Right-click the cat (on macOS, use the menu bar icon) and open the skin menu to switch between Orca Cat and the original skins.
 
-Use the icons beneath the pet to give it a treat, put it to sleep, wake it up, switch desk modes, or toggle each kind of input bubble. Hover over an icon to see its name. After hiding the controls, open the cat or tray menu to show them again.
+The icon bar beneath the pet has five buttons: give a treat, sleep/wake (one button that turns into wake while the cat sleeps), listen to music, switch desk mode, and hide the controls. Hover over an icon to see its name; a short gold line marks a feature that is on. Double-click wake and the key and mouse bubble toggles are in the right-click menu. After hiding the controls, open the cat or tray menu to show them again.
 
-Click the headphones icon to give Orca Cat headphones. It closes its eyes and nods along while audio plays on the default Windows output device, and opens its eyes in silence. Click the headphones again or choose another enabled control to stop. Audio is processed locally in real time.
+Click the headphones icon to give Orca Cat headphones. It closes its eyes and nods along while audio plays on the default output device, and opens its eyes in silence. Click the headphones again or choose another enabled control to stop. Audio is processed locally in real time.
+
+Key labels on the keyboard appear only while a key is pressed and glowing, so the keyboard stays clean the rest of the time.
+
+The cat lowers its frame rate when nobody is using the computer (60fps with input, 30fps idle, 15fps asleep) to save CPU and battery.
+
+### Platform features
+
+| Feature | Windows | macOS | Linux / UOS |
+| :--- | :---: | :---: | :---: |
+| Classic Black / Siamese / Shorthair / Orange & White | ✓ | ✓ | ✓ |
+| Orca Cat, Dopey Cat | ✓ | ✓ | — |
+| Icon bar, music, tablet and arcade modes | ✓ | ✓ | — |
+| Stream capture (transparent / green screen) | ✓ | ✓ | — |
 
 In Auto mode, Orca Cat picks up a stylus in supported art apps such as Blender, Krita, and Photoshop. It switches back to the keyboard and mouse when a text field has focus. Select **Check for Updates** in the tray menu to open the [SachiCat releases](https://github.com/catopia-meow/SachiCat/releases) in your default browser.
 
@@ -27,7 +40,7 @@ All platforms read [VERSION](VERSION) from the repository root. Prefix the relea
 </p>
 
 <p align="center">
-  <b>Ultra-lightweight native desktop pet · Hardware-level full-state capture for typing &amp; gaming · 2.5D spherical head tracking · Hunting boba eyes · 4 switchable skins</b><br/>
+  <b>Ultra-lightweight native desktop pet · Hardware-level full-state capture for typing &amp; gaming · 2.5D spherical head tracking · Hunting boba eyes · 6 switchable skins</b><br/>
   Native macOS (Swift + CoreGraphics + IOHIDManager) · Windows (C++17 + GDI+ + Raw Input) · Linux / UOS (C++17 + GTK3/Cairo + XInput2/evdev)
 </p>
 
@@ -47,12 +60,12 @@ All platforms read [VERSION](VERSION) from the repository root. Prefix the relea
   - **3-Key "Hind Paw Press"**: Hold 3 or more keys simultaneously and the cat lifts its hind paw to press the 3rd key!
   - **Head / Back Petting**: Gently stroke the cat's head with your cursor to trigger cozy closed eyes `— —` and shimmer particles; leave it idle and it falls asleep with floating `z`s.
   - **Smart Click-Through & Launch at Login**: Transparent areas pass clicks through automatically. Toggle **Full Click-Through (Gaming Anti-Misclick)** anytime or enable **Launch at Login** (Windows Registry / macOS LaunchAgent / Linux XDG Autostart).
-- **🎨 4 Skins & Custom Color Combinations**
-  - **Cat Skins**: Classic Black Cat (neon yellow-green eyes) / Siamese Cat (warm oat cream + 2.5D caramel mask + chocolate socks + sapphire blue eyes) / American Shorthair (silver tabby & white) / Orange & White Cat (orange crown + white chest & mittens)
-  - **Keyboard Themes**: Classic Warm Cream / Midnight Geek Black / Retro Cream Gray (toggle key labels, key bubbles, and mouse click bubbles)
+- **🎨 6 Skins & Custom Color Combinations**
+  - **Cat Skins**: Classic Black Cat (neon yellow-green eyes) / Siamese Cat (warm oat cream + 2.5D caramel mask + chocolate socks + sapphire blue eyes) / American Shorthair (silver tabby & white) / Orange & White Cat (orange crown + white chest & mittens) / Orca Cat (black-and-white tuxedo + white mittens) / Dopey Cat (Windows and macOS)
+  - **Keyboard Themes**: Classic Warm Cream / Midnight Geek Black / Retro Cream Gray / Dopey Blue-Purple (toggle key labels, key bubbles, and mouse click bubbles)
   - **Eye Colors & Scaling**: 6 eye colors, 5 size levels, plus daily keystroke counter and live KPM stats.
 
-### 6-State Preview of All 4 Skins
+### 6-State Preview of the 4 Original Skins
 
 | Classic Black Cat | Siamese Cat |
 | :---: | :---: |

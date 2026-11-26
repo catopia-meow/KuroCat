@@ -6,6 +6,9 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <map>
+#include <tuple>
+#include <string>
 #include "CatPhysics.hpp"
 #include "DopeyCat.hpp"
 #include "../../shared/CoatPatterns.hpp"
@@ -21,6 +24,21 @@ enum class PetControl { None, Treat, Sleep, Wake, DoubleClickWake, Music, Mode, 
 class CatRenderer {
 public:
     static constexpr float RadToDeg = 57.2957795f;
+
+    /// Fonts are reused across frames instead of being created for every key, badge and "z".
+    /// Sizes are rounded to 0.25px so animated sizes only ever create a handful of fonts.
+    /// The fonts are deliberately never freed: GDI+ objects must not outlive GdiplusShutdown.
+    static const Gdiplus::Font& cachedFont(const wchar_t* family, float size, INT style) {
+        using Key = std::tuple<std::wstring, int, INT>;
+        static std::map<Key, Gdiplus::Font*>* fonts = new std::map<Key, Gdiplus::Font*>();
+        int quarterPx = (int)std::lround(size * 4.0f);
+        Key key{family, quarterPx, style};
+        auto it = fonts->find(key);
+        if (it == fonts->end()) {
+            it = fonts->emplace(key, new Gdiplus::Font(family, quarterPx / 4.0f, style, Gdiplus::UnitPixel)).first;
+        }
+        return *it->second;
+    }
 
     static float canvasHeight(const CatSettings& settings) {
         return settings.showControls ? 342.0f : CatPhysics::CanvasHeight;
@@ -44,14 +62,22 @@ public:
         }
     }
 
+    /// The shared sleep slot acts as "wake" while the cat is resting.
+    static PetControl resolveControl(PetControl control, const CatPhysics& physics) {
+        return control == PetControl::Sleep && physics.resting() ? PetControl::Wake : control;
+    }
+
+    static const wchar_t* controlLabel(PetControl control) {
+        return control == PetControl::Wake ? L"晚上猫熬人" : nullptr;
+    }
+
     static void drawControls(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings,
                              PetControl hover = PetControl::None, PetControl held = PetControl::None,
                              bool showTip = false) {
         using namespace Gdiplus;
         const auto colors = keyboardColors(settings.activeKeyboardTheme());
         GraphicsPath shell;
-        const float leftEdge = 61.0f;
-        addRoundedRect(shell, leftEdge, controlTop - 3.0f, 301.0f-leftEdge, controlHeight + 7.0f, 6.0f);
+        addRoundedRect(shell, controlBarLeft, controlTop - 3.0f, controlBarRight - controlBarLeft, controlHeight + 7.0f, 6.0f);
         SolidBrush deck(colors.base);
         g.FillPath(&deck, &shell);
 
@@ -59,33 +85,42 @@ public:
         const Color ink = settings.activeKeyboardTheme() == KeyboardTheme::MidnightHacker ? rgb(0xF0EEE8) : rgb(0x28262B);
         const ControlButton* described = nullptr;
         for (const auto& button : controlButtons) {
-            bool enabled = controlEnabled(button.control, physics);
-            bool active = button.control == PetControl::Music ? physics.listening() : controlActive(button.control, settings);
+            const PetControl control = resolveControl(button.control, physics);
+            bool enabled = controlEnabled(control, physics);
+            bool active = control == PetControl::Music ? physics.listening() : controlActive(control, settings);
             bool pressing = enabled && hover == button.control && held == button.control;
             float top = controlTop + (pressing ? 1.5f : 0.0f);
-            Color fill = active ? blendColor(colors.cap, gold, 0.78f) : colors.cap;
+            // Every key keeps the same cap colour; an "on" state is a short gold bar under the icon,
+            // so the bar no longer reads as a patchwork of gold, white and grey blocks.
+            Color fill = colors.cap;
             if (!enabled) fill = blendColor(fill, colors.deck, 0.31f);
-            if (enabled && hover == button.control) fill = blendColor(fill, gold, active ? 0.13f : 0.28f);
+            if (enabled && hover == button.control) fill = blendColor(fill, gold, 0.22f);
             if (pressing) fill = blendColor(fill, colors.base, 0.10f);
 
             GraphicsPath key;
             addRoundedRect(key, button.x, top, button.width, controlHeight - 1.5f, 4.0f);
             SolidBrush cap(fill);
             g.FillPath(&cap, &key);
-            Pen rim(active ? blendColor(gold, colors.base, 0.23f) : colors.border, 0.65f);
+            Pen rim(colors.border, 0.65f);
             g.DrawPath(&rim, &key);
-            Color symbol = active ? rgb(0x292324) : ink;
+            if (active) {
+                GraphicsPath bar;
+                addRoundedRect(bar, button.x + 6.0f, top + controlHeight - 5.2f, button.width - 12.0f, 2.0f, 1.0f);
+                SolidBrush lit(gold);
+                g.FillPath(&lit, &bar);
+            }
             auto state = g.Save();
-            g.TranslateTransform(button.x + button.width * 0.5f, top + (controlHeight - 1.5f) * 0.5f);
-            drawControlSymbol(g, button.control, enabled ? symbol : blendColor(symbol, fill, 0.57f),
-                              settings.deskMode());
+            g.TranslateTransform(button.x + button.width * 0.5f, top + (controlHeight - 1.5f) * 0.5f - (active ? 1.0f : 0.0f));
+            drawControlSymbol(g, control, enabled ? ink : blendColor(ink, fill, 0.57f), settings.deskMode());
             g.Restore(state);
             if (showTip && button.control == hover) described = &button;
         }
         if (described) {
-            Font label(L"Microsoft YaHei UI", 10.2f, FontStyleRegular, UnitPixel);
-            const wchar_t* tipLabel = described->control == PetControl::Mode
-                ? modeTooltip(settings.deskMode()) : described->label;
+            const Font& label = cachedFont(L"Microsoft YaHei UI", 10.2f, FontStyleRegular);
+            const PetControl describedControl = resolveControl(described->control, physics);
+            const wchar_t* tipLabel = describedControl == PetControl::Mode
+                ? modeTooltip(settings.deskMode())
+                : (controlLabel(describedControl) ? controlLabel(describedControl) : described->label);
             RectF measured;
             g.MeasureString(tipLabel, -1, &label, PointF(0, 0), &measured);
             float width = measured.Width + 10.0f;
@@ -314,17 +349,19 @@ private:
     struct ControlButton { PetControl control; float x, width; const wchar_t* label; };
     static constexpr float controlTop = 312.0f;
     static constexpr float controlHeight = 22.0f;
+    // Only the everyday actions live on the bar; double-click wake and the bubble toggles stay in
+    // the right-click and tray menus. Sleep and wake share one slot that shows whichever applies.
     static constexpr ControlButton controlButtons[] = {
-        {PetControl::Treat, 66, 22, L"喂零食"}, {PetControl::Sleep, 92, 22, L"白天不熬猫"},
-        {PetControl::Wake, 118, 22, L"晚上猫熬人"}, {PetControl::DoubleClickWake, 144, 22, L"双击猫头唤醒"},
+        {PetControl::Treat, 118, 22, L"喂零食"}, {PetControl::Sleep, 144, 22, L"白天不熬猫"},
         {PetControl::Music, 170, 22, L"听音乐"}, {PetControl::Mode, 196, 22, L"切换模式"},
-        {PetControl::KeyBubbles, 222, 22, L"按键气泡"}, {PetControl::MouseBubbles, 248, 22, L"鼠标气泡"},
-        {PetControl::Hide, 274, 22, L"隐藏控件"}
+        {PetControl::Hide, 222, 22, L"隐藏控件"}
     };
+    static constexpr float controlBarLeft = 113.0f;
+    static constexpr float controlBarRight = 249.0f;
+
 
     static bool controlActive(PetControl control, const CatSettings& settings) {
         switch (control) {
-            case PetControl::Mode: return true;
             case PetControl::DoubleClickWake: return settings.doubleClickWake;
             case PetControl::KeyBubbles: return settings.showKeyBadges;
             case PetControl::MouseBubbles: return settings.showMouseBadges;
@@ -700,7 +737,6 @@ private:
         constexpr float padV = 0.014f;
         Color glowCol = theme == KeyboardTheme::DopeyBlue ? rgb(0x9A82E4, 215) : eyePrimary(eyeTheme, 215);
         Pen keyBorderPen(borderCol, 0.65f);
-        FontFamily kbFF(L"Segoe UI");
         StringFormat kbSF;
         kbSF.SetAlignment(StringAlignmentCenter);
         kbSF.SetLineAlignment(StringAlignmentCenter);
@@ -733,7 +769,9 @@ private:
             g.FillPath(&kb, &kp);
             g.DrawPath(&keyBorderPen, &kp);
 
-            if (showLegends) {
+            // Legends are only a few pixels tall, so drawing all of them reads as noise. Show a
+            // legend only while its key glows, and fade it in and out with the glow.
+            if (showLegends && glow > 0.05f) {
                 bool isSpace = (cap.key == PhysicalKey::Space);
                 std::wstring legend = isSpace ? std::wstring(L"space") : keycapLegend(cap.key);
                 if (!legend.empty()) {
@@ -747,12 +785,12 @@ private:
                         cx = sp.x;
                         cy = sp.y + dy;
                     }
+                    const float legendAlpha = std::min(1.0f, glow * 1.6f);
                     Color txtCol = (cap.isAmberAccent || theme != KeyboardTheme::MidnightHacker)
-                        ? Color(198, 36, 36, 41)
-                        : Color(210, 224, 230, 235);
+                        ? Color((BYTE)(198 * legendAlpha), 36, 36, 41)
+                        : Color((BYTE)(210 * legendAlpha), 224, 230, 235);
                     SolidBrush tb(txtCol);
-                    float fSz = legend.size() <= 1 ? 5.2f : 3.9f;
-                    Font kf(&kbFF, fSz, FontStyleBold, UnitPixel);
+                    const Font& kf = cachedFont(L"Segoe UI", legend.size() <= 1 ? 5.2f : 3.9f, FontStyleBold);
                     GraphicsState ks = g.Save();
                     g.TranslateTransform(cx, cy);
                     // The keyboard is laid out 180° to face the cat, so the legends must be too
@@ -1603,6 +1641,8 @@ private:
         }
     }
 
+    static constexpr float orcaLegFeather = 1.5f;
+
     static void fillOrcaForeleg(Gdiplus::Graphics& g, const Gdiplus::GraphicsPath& leg, Pt shoulder, Pt paw, float chestFur = 1.0f) {
         using namespace Gdiplus;
         float dx = paw.x - shoulder.x, dy = paw.y - shoulder.y;
@@ -1618,12 +1658,14 @@ private:
         LinearGradientBrush brush(PointF(shoulder.x - ux * pad, shoulder.y - uy * pad),
                                   PointF(paw.x + ux * pad, paw.y + uy * pad), clear, black);
         brush.SetWrapMode(WrapModeTileFlipXY);
-        Color colors[] = {clear, clear, shoulderColor, blendColor(black, rgb(0x939297), chestFur),
-                          blendColor(black, rgb(0x38373B), chestFur), black, black};
+        // Tuxedo fur changes from white to black at a crisp edge. A long grey ramp here read as a
+        // smudge across the chest, so the white shoulder meets the black leg within a few pixels.
+        float edge = pad + fade * 0.5f;
+        float feather = std::min(orcaLegFeather, fade * 0.25f);
+        Color colors[] = {clear, clear, shoulderColor, shoulderColor, black, black};
         REAL stops[] = {0, (pad - 3.0f) / span, (pad + fade * 0.22f) / span,
-                        (pad + fade * 0.50f) / span, (pad + fade * 0.78f) / span,
-                        (pad + fade) / span, 1};
-        brush.SetInterpolationColors(colors, stops, 7);
+                        (edge - feather) / span, (edge + feather) / span, 1};
+        brush.SetInterpolationColors(colors, stops, 6);
         g.FillPath(&brush, &leg);
     }
 
@@ -1800,7 +1842,6 @@ private:
 
     static void drawFloatingKeycaps(Gdiplus::Graphics& g, const CatPhysics& physics, const CatSettings& settings) {
         using namespace Gdiplus;
-        FontFamily ff(L"Segoe UI");
         StringFormat sf;
         sf.SetAlignment(StringAlignmentCenter);
         sf.SetLineAlignment(StringAlignmentCenter);
@@ -1841,7 +1882,7 @@ private:
             g.FillPath(&faceBrush, &facePath);
             g.DrawPath(&facePen, &facePath);
 
-            Font font(&ff, len <= 1 ? 11.0f : 9.2f, FontStyleBold, UnitPixel);
+            const Font& font = cachedFont(L"Segoe UI", len <= 1 ? 11.0f : 9.2f, FontStyleBold);
             SolidBrush txtBrush(Color(a, 31, 31, 36));
             g.DrawString(b.label.c_str(), -1, &font, RectF(-w * 0.5f, -h * 0.5f, w, h), &sf, &txtBrush);
 
@@ -1854,7 +1895,6 @@ private:
     static void drawSparkles(Gdiplus::Graphics& g, const CatPhysics& physics, EyeColorTheme eyeTheme, bool dopeySleep = false) {
         using namespace Gdiplus;
         Color baseCol = eyePrimary(eyeTheme);
-        FontFamily ff(L"Segoe UI");
 
         for (const auto& sp : physics.sparkles) {
             float p = std::min(1.0f, sp.age / sp.lifetime);
@@ -1869,12 +1909,12 @@ private:
                         const float phase = (sp.age-i*delay)/(sp.lifetime-2*delay);
                         if (phase <= 0 || phase >= 1) continue;
                         const float opacity = CatPhysics::ease(phase/.16f) * CatPhysics::ease((1-phase)/.43f);
-                        Font font(&ff,10.f+4*i,FontStyleBold,UnitPixel);
+                        const Font& font = cachedFont(L"Segoe UI",10.f+4*i,FontStyleBold);
                         SolidBrush ink(Color(BYTE(225*opacity),135,146,203));
                         g.DrawString(L"z",1,&font,PointF(sp.position.x+11+12*i,sp.position.y-19-9*i),&ink);
                     }
                 } else {
-                    Font font(&ff,11.f+p*3.f,FontStyleBold,UnitPixel);
+                    const Font& font = cachedFont(L"Segoe UI",11.f+p*3.f,FontStyleBold);
                     SolidBrush ink(c);
                     g.DrawString(L"z",1,&font,PointF(sp.position.x,sp.position.y),&ink);
                 }

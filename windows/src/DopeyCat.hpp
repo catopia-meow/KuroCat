@@ -273,7 +273,7 @@ inline void barrelReaction(Gdiplus::Graphics& g, const CatPhysics& p) {
         smoke.SetCenterPoint(PointF(cx-r*.15f,cy-r*.27f));
         const Color tones[] = {Color(0,gray,gray,gray), Color(BYTE(205*fade),gray,gray,gray),
                                Color(BYTE(243*fade),gray+30,gray+30,gray+30)};
-        const REAL stops[] = {0,.26f,1};
+        REAL stops[] = {0,.26f,1}; // MinGW's GDI+ header takes a non-const pointer
         smoke.SetInterpolationColors(tones,stops,3);
         g.FillPath(&smoke,&billow);
     }
