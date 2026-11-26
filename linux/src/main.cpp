@@ -560,7 +560,7 @@ static void showPopupMenu(LinuxApp& app, GdkEventButton* evt) {
         g_app->settings.posY = -99999;
         applyWindowScaleAndPos(*g_app, false);
     }));
-    std::string lbl = std::string("检查更新 (SachiCat v") + APP_VERSION + ")";
+    std::string lbl = std::string("检查更新（前往 GitHub 发布页）· SachiCat v") + APP_VERSION;
     addAction(lbl.c_str(), G_CALLBACK(+[](GtkMenuItem*, gpointer) {
         GError* error = nullptr;
         if (!gtk_show_uri_on_window(GTK_WINDOW(g_app->window), RELEASE_PAGE, GDK_CURRENT_TIME, &error)) {

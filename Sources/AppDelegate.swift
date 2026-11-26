@@ -462,7 +462,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         relaunchItem.target = self
         menu.addItem(relaunchItem)
 
-        let checkItem = NSMenuItem(title: "检查更新 · SachiCat v\(currentAppVersion)", action: #selector(openReleasePage), keyEquivalent: "")
+        let checkItem = NSMenuItem(title: "检查更新（前往 GitHub 发布页）· SachiCat v\(currentAppVersion)", action: #selector(openReleasePage), keyEquivalent: "")
         checkItem.target = self
         menu.addItem(checkItem)
 

@@ -680,7 +680,7 @@ void showContextMenu(AppState& app, POINT screenPt) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | actionFlags, CMD_DEMO_BURST, L"\u6F14\u793A\u6253\u5B57\u52A8\u753B");
     AppendMenuW(menu, MF_STRING, CMD_RESET_POS, L"\u91CD\u7F6E\u4F4D\u7F6E\u5230\u53F3\u4E0B\u89D2");
-    std::wstring checkLabel = L"检查更新（SachiCat " SACHICAT_VERSION_W L"）";
+    std::wstring checkLabel = L"检查更新（前往 GitHub 发布页）· SachiCat v" SACHICAT_VERSION_W;
     AppendMenuW(menu, MF_STRING, CMD_CHECK_UPDATE, checkLabel.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, CMD_QUIT, L"\u9000\u51FA SachiCat");
