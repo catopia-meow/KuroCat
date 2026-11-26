@@ -1642,9 +1642,14 @@ private:
         }
     }
 
-    static constexpr float orcaLegFeather = 1.5f;
+    // The white bib reaches down the inner edge of each foreleg, so the white-to-black edge runs on a
+    // slant (higher on the outer side, lower toward the chest) with a short soft blend.
+    static constexpr float orcaLegFeather = 4.0f;
+    static constexpr float orcaLegSlant = 0.85f;
 
-    static void fillOrcaForeleg(Gdiplus::Graphics& g, const Gdiplus::GraphicsPath& leg, Pt shoulder, Pt paw, float chestFur = 1.0f) {
+    // innerSide is +1 when the body's centre lies to the right of this leg, -1 when to the left.
+    static void fillOrcaForeleg(Gdiplus::Graphics& g, const Gdiplus::GraphicsPath& leg, Pt shoulder, Pt paw,
+                                float innerSide, float chestFur = 1.0f) {
         using namespace Gdiplus;
         float dx = paw.x - shoulder.x, dy = paw.y - shoulder.y;
         float length = std::max(1.0f, std::hypot(dx, dy));
@@ -1656,18 +1661,35 @@ private:
         Color black = limbColor(CatCoatTheme::OrcaCat);
         Color shoulderColor = blendColor(black, pawColor(CatCoatTheme::OrcaCat), chestFur);
         Color clear(0, shoulderColor.GetR(), shoulderColor.GetG(), shoulderColor.GetB());
-        LinearGradientBrush brush(PointF(shoulder.x - ux * pad, shoulder.y - uy * pad),
-                                  PointF(paw.x + ux * pad, paw.y + uy * pad), clear, black);
-        brush.SetWrapMode(WrapModeTileFlipXY);
-        // Tuxedo fur changes from white to black at a crisp edge. A long grey ramp here read as a
-        // smudge across the chest, so the white shoulder meets the black leg within a few pixels.
-        float edge = pad + fade * 0.5f;
+
+        // White layer: fades in from the chest along the leg and stays white to the paw.
+        LinearGradientBrush white(PointF(shoulder.x - ux * pad, shoulder.y - uy * pad),
+                                  PointF(paw.x + ux * pad, paw.y + uy * pad), clear, shoulderColor);
+        white.SetWrapMode(WrapModeTileFlipXY);
+        Color whiteColors[] = {clear, clear, shoulderColor, shoulderColor};
+        REAL whiteStops[] = {0, (pad - 3.0f) / span, (pad + fade * 0.22f) / span, 1};
+        white.SetInterpolationColors(whiteColors, whiteStops, 4);
+        g.FillPath(&white, &leg);
+
+        // Black layer: its gradient axis leans toward the chest, which tilts the edge across the leg.
+        float nx = -uy, ny = ux;
+        float lean = -uy * innerSide * orcaLegSlant;
+        float gx = ux - lean * nx, gy = uy - lean * ny;
+        float gl = std::max(0.001f, std::hypot(gx, gy));
+        gx /= gl; gy /= gl;
+        float along = ux * gx + uy * gy;
+        float edge = pad + fade * 0.5f * along;
+        float total = pad + length * along + 2.0f * pad;
         float feather = std::min(orcaLegFeather, fade * 0.25f);
-        Color colors[] = {clear, clear, shoulderColor, shoulderColor, black, black};
-        REAL stops[] = {0, (pad - 3.0f) / span, (pad + fade * 0.22f) / span,
-                        (edge - feather) / span, (edge + feather) / span, 1};
-        brush.SetInterpolationColors(colors, stops, 6);
-        g.FillPath(&brush, &leg);
+        Color clearBlack(0, black.GetR(), black.GetG(), black.GetB());
+        LinearGradientBrush dark(PointF(shoulder.x - gx * pad, shoulder.y - gy * pad),
+                                 PointF(shoulder.x + gx * (total - pad), shoulder.y + gy * (total - pad)),
+                                 clearBlack, black);
+        dark.SetWrapMode(WrapModeTileFlipXY);
+        Color darkColors[] = {clearBlack, clearBlack, black, black};
+        REAL darkStops[] = {0, (edge - feather) / total, (edge + feather) / total, 1};
+        dark.SetInterpolationColors(darkColors, darkStops, 4);
+        g.FillPath(&dark, &leg);
     }
 
     static void drawIdleFrontLeg(Gdiplus::Graphics& g, Pt top, Pt bottom, bool isLeft, CatCoatTheme coat) {
@@ -1691,7 +1713,7 @@ private:
         if (coat == CatCoatTheme::OrcaCat) {
             GraphicsPath leg;
             addRoundedRect(leg, bottom.x - 7.5f, top.y, 15.0f, bottom.y - top.y, 7.5f);
-            fillOrcaForeleg(g, leg, {bottom.x, top.y}, bottom);
+            fillOrcaForeleg(g, leg, {bottom.x, top.y}, bottom, isLeft ? 1.0f : -1.0f);
             GraphicsPath toes;
             addRoundedRect(toes, bottom.x - 7.5f, bottom.y - 9.0f, 15.0f, 14.0f, 5.0f);
             SolidBrush white(pawColor(coat));
@@ -1762,7 +1784,7 @@ private:
                 REAL positions[3]={0,0.30f,1};gradient.SetInterpolationColors(colors,positions,3);
                 g.FillPath(&gradient,&limbPath);
             } else if (coat == CatCoatTheme::OrcaCat && limb != Limb::HindLeg) {
-                fillOrcaForeleg(g, limbPath, start, end, chestFur);
+                fillOrcaForeleg(g, limbPath, start, end, limb == Limb::LeftForeleg ? 1.0f : -1.0f, chestFur);
             } else g.FillPath(&b, &limbPath);
             if (!hasWhiteSocks(coat)) g.FillEllipse(&b, pawRect);
             else {
