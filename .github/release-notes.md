@@ -1,4 +1,4 @@
-- 拖动呆猫变成球滚动时，身后会留下几个半透明的呆猫球残影，随滚动角度旋转并很快淡出（Windows 与 macOS 同步）。
+- 虎鲸猫前臂的黑白分界改为斜线：外侧高、靠胸口的内侧低，与胸前的白色 V 字连成一体，分界处带一点柔和渐变（Windows 与 macOS 同步）。
 - Windows 下载 `SachiCat-Windows-x64.exe`。macOS 下载 `SachiCat-macOS-universal.zip`，解压后将 `SachiCat.app` 放入「应用程序」。
 - **macOS 版未在 Mac 上实机测试。** 通用包包含 Apple Silicon 和 Intel 两种架构。
 - Linux 提供 x86_64 和 ARM64 的压缩包及 Debian 安装包。
